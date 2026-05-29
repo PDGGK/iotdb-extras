@@ -18,16 +18,18 @@
 
 package org.apache.iotdb.extras.thingsboard.table;
 
+import org.apache.iotdb.isession.SessionDataSet;
 import org.apache.iotdb.isession.pool.ITableSessionPool;
+import org.apache.iotdb.rpc.StatementExecutionException;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Repository;
 
 /**
- * Base marker for IoTDB Table Mode DAO skeletons.
- *
- * <p>Spring activation: always available; concrete DAO activation is declared on each repository
- * class.
+ * Base class for IoTDB Table Mode DAOs; not a Spring bean itself. Concrete DAOs declare
+ * {@code @Repository} and the activation conditional. Holds the shared {@code ITableSessionPool}
+ * (wired via constructor injection) and provides type-mapping helpers used by concrete DAOs
+ * (TimeseriesDao, LatestDao, AttributesDao, LabelDao). ThingsBoard interface bridging is deferred
+ * to Wk 2 once TB JAR resolution path is decided.
  *
  * <p>Strategy F keeps this class free of ThingsBoard imports and interface clauses until the DAO
  * dependency path is decided.
@@ -36,10 +38,56 @@ import org.springframework.stereotype.Repository;
  * @since GSOC-304 Wk 1 scaffold
  */
 @Slf4j
-@Repository
 public class IoTDBTableBaseDao {
-  protected ITableSessionPool tableSessionPool;
+  protected final ITableSessionPool tableSessionPool;
 
-  // TODO(Strategy F): add shared DAO wiring after dependency resolution is decided.
-  // TODO(GSOC-304 Wk 2): add shared IoTDB Table helpers in the scheduled method week.
+  public IoTDBTableBaseDao(ITableSessionPool tableSessionPool) {
+    this.tableSessionPool = tableSessionPool;
+  }
+
+  /**
+   * Maps a single IoTDB Table Mode telemetry row's 5 typed FIELD columns to a TypedKvValue. Exactly
+   * one column must be non-null per the design doc §3.1 schema; throws IllegalStateException if
+   * more than one is non-null (fail-fast on schema invariant violation). Returns
+   * TypedKvValue.empty() if all 5 are null (caller decides how to handle). The caller must call
+   * row.next() and receive true before invoking this method so the iterator is positioned on a row.
+   */
+  public TypedKvValue getEntry(SessionDataSet.DataIterator row) throws StatementExecutionException {
+    boolean hasBoolean = !row.isNull("bool_v");
+    boolean hasLong = !row.isNull("long_v");
+    boolean hasDouble = !row.isNull("double_v");
+    boolean hasString = !row.isNull("str_v");
+    boolean hasJson = !row.isNull("json_v");
+
+    int valueCount = 0;
+    valueCount += hasBoolean ? 1 : 0;
+    valueCount += hasLong ? 1 : 0;
+    valueCount += hasDouble ? 1 : 0;
+    valueCount += hasString ? 1 : 0;
+    valueCount += hasJson ? 1 : 0;
+
+    if (valueCount == 0) {
+      return TypedKvValue.empty();
+    }
+    if (valueCount > 1) {
+      throw new IllegalStateException(
+          "IoTDB telemetry row has "
+              + valueCount
+              + " typed value columns set; design doc §3.1 schema requires exactly one. "
+              + "Possible same-timestamp type-change bug or stale data.");
+    }
+    if (hasBoolean) {
+      return TypedKvValue.ofBoolean(row.getBoolean("bool_v"));
+    }
+    if (hasLong) {
+      return TypedKvValue.ofLong(row.getLong("long_v"));
+    }
+    if (hasDouble) {
+      return TypedKvValue.ofDouble(row.getDouble("double_v"));
+    }
+    if (hasString) {
+      return TypedKvValue.ofString(row.getString("str_v"));
+    }
+    return TypedKvValue.ofJson(row.getString("json_v"));
+  }
 }

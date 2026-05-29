@@ -18,7 +18,10 @@
 
 package org.apache.iotdb.extras.thingsboard.table;
 
+import org.apache.iotdb.isession.pool.ITableSessionPool;
+
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Repository;
 
@@ -35,8 +38,13 @@ import org.springframework.stereotype.Repository;
  */
 @Slf4j
 @Repository
+@ConditionalOnBean(ITableSessionPool.class)
 @ConditionalOnProperty(name = "database.ts_latest.type", havingValue = "iotdb-table")
 public class IoTDBTableLatestDao extends IoTDBTableBaseDao {
+  public IoTDBTableLatestDao(ITableSessionPool tableSessionPool) {
+    super(tableSessionPool);
+  }
+
   // TODO(Strategy F): add TimeseriesLatestDao binding after dependency resolution is decided.
   // TODO(GSOC-304 Wk 4): add latest telemetry method bodies.
 }
