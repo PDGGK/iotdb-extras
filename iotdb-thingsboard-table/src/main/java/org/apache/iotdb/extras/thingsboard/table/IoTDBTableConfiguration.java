@@ -23,6 +23,7 @@ import org.apache.iotdb.session.pool.TableSessionPoolBuilder;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -38,6 +39,7 @@ public class IoTDBTableConfiguration {
   @ConditionalOnExpression(
       "'${database.ts.type:}'.equalsIgnoreCase('iotdb-table') "
           + "or '${database.ts_latest.type:}'.equalsIgnoreCase('iotdb-table') "
+          + "or '${database.attributes.type:}'.equalsIgnoreCase('iotdb-table') "
           + "or '${iotdb.labels.enabled:false}'.equalsIgnoreCase('true')")
   public ITableSessionPool tableSessionPool(IoTDBTableConfig config) {
     String nodeUrl = config.getHost() + ":" + config.getPort();
@@ -46,16 +48,40 @@ public class IoTDBTableConfiguration {
             .nodeUrls(List.of(nodeUrl))
             .user(config.getUsername())
             .password(config.getPassword())
+            .database(config.getDatabase())
             .maxSize(config.getSessionPoolSize())
             .connectionTimeoutInMs(config.getConnectionTimeoutMs())
             .enableIoTDBRpcCompression(config.isEnableCompression())
             .build();
     log.info(
-        "IoTDB Table Mode session pool initialized: nodeUrl={}, poolSize={}, compression={}, defaultTtlMs={}",
+        "IoTDB Table Mode session pool initialized: nodeUrl={}, database={}, poolSize={}, compression={}, storageAccountingDefaultTtlMs={}",
         nodeUrl,
+        config.getDatabase(),
         config.getSessionPoolSize(),
         config.isEnableCompression(),
         config.getDefaultTtlMs());
     return pool;
+  }
+
+  @Bean
+  @ConditionalOnProperty(name = "database.ts.type", havingValue = "iotdb-table")
+  public IoTDBTableTimeseriesWriter timeseriesWriter(
+      ITableSessionPool tableSessionPool, IoTDBTableConfig config) {
+    return new IoTDBTableTimeseriesWriter(tableSessionPool, config);
+  }
+
+  /**
+   * Entity-attribute DAO, activated by {@code database.attributes.type=iotdb-table} (Phase-1
+   * selector pending upstream ThingsBoard confirmation; see {@link IoTDBTableAttributesDao}). It is
+   * declared as an explicit {@code @Bean} (taking the pool as a parameter) rather than a
+   * component-scanned {@code @Repository}, so the pool is guaranteed to exist when the DAO is
+   * created and the {@code @ConditionalOnBean} bean-ordering trap is avoided. The {@code @Bean}
+   * destroy method drains the DAO's IO executor on shutdown.
+   */
+  @Bean(destroyMethod = "destroy")
+  @ConditionalOnProperty(name = "database.attributes.type", havingValue = "iotdb-table")
+  public IoTDBTableAttributesDao attributesDao(
+      ITableSessionPool tableSessionPool, IoTDBTableConfig config) {
+    return new IoTDBTableAttributesDao(tableSessionPool, config);
   }
 }

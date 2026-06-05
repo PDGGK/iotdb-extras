@@ -36,12 +36,16 @@
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <iotdb.version>2.0.8</iotdb.version>
+        <guava.version>32.1.3-jre</guava.version>
+        <jakarta.validation-api.version>3.0.2</jakarta.validation-api.version>
         <junit.jupiter.version>5.10.2</junit.jupiter.version>
         <lombok.version>1.18.42</lombok.version>
         <mockito.version>5.21.0</mockito.version>
         <testcontainers.version>1.21.3</testcontainers.version>
+        <thingsboard.version>4.3.1.1</thingsboard.version>
+        <thingsboard.commonDataSourceRoot/>
         <maven.compiler.plugin.version>3.13.0</maven.compiler.plugin.version>
-        <maven.failsafe.plugin.version>3.2.5</maven.failsafe.plugin.version>
+        <maven.jar.plugin.version>3.3.0</maven.jar.plugin.version>
         <maven.surefire.plugin.version>3.2.5</maven.surefire.plugin.version>
     </properties>
     <dependencies>
@@ -49,6 +53,11 @@
             <groupId>org.apache.iotdb</groupId>
             <artifactId>iotdb-session</artifactId>
             <version>${iotdb.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>${guava.version}</version>
         </dependency>
         <dependency>
             <groupId>org.springframework</groupId>
@@ -102,7 +111,7 @@
         <dependency>
             <groupId>org.hibernate.validator</groupId>
             <artifactId>hibernate-validator</artifactId>
-            <version>6.2.5.Final</version>
+            <version>8.0.2.Final</version>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -146,37 +155,124 @@
                         </path>
                     </annotationProcessorPaths>
                 </configuration>
+                <executions>
+                    <execution>
+                        <id>default-compile</id>
+                        <configuration>
+                            <!--
+                                Fallback compile-only ThingsBoard surface.
+                                The real org.thingsboard.common:data:${thingsboard.version} artifact could not be
+                                installed in the network-restricted local Maven repo during this pass. These sources
+                                are available only to javac and are excluded from the built jar below; replace this
+                                source root with a provided-scope org.thingsboard.common:data dependency once the
+                                upstream artifact is resolvable.
+                            -->
+                            <compileSourceRoots>
+                                <compileSourceRoot>${project.basedir}/src/main/java</compileSourceRoot>
+                                <compileSourceRoot>${project.basedir}/src/provided/java</compileSourceRoot>
+                            </compileSourceRoots>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>${maven.jar.plugin.version}</version>
+                <configuration>
+                    <excludes>
+                        <exclude>org/thingsboard/**</exclude>
+                        <!--
+                            Compile-only stub of org.apache.commons.lang3.tuple.Pair (src/provided),
+                            needed so the AttributesDao SPI signature resolves. commons-lang3 is not a
+                            dependency of this module; the real artifact is supplied by the host
+                            ThingsBoard runtime. Exclude the stub from the jar so it never shadows the
+                            real commons-lang3 on the deployment classpath.
+                        -->
+                        <exclude>org/apache/commons/**</exclude>
+                    </excludes>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${maven.surefire.plugin.version}</version>
                 <configuration>
-                    <includes>
-                        <include>**/*Test.java</include>
-                    </includes>
-                    <excludes>
-                        <exclude>**/*IT.java</exclude>
-                    </excludes>
-                </configuration>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-failsafe-plugin</artifactId>
-                <version>${maven.failsafe.plugin.version}</version>
-                <configuration>
-                    <includes>
-                        <include>**/*IT.java</include>
-                    </includes>
+                    <systemPropertyVariables>
+                        <thingsboard.commonDataSourceRoot>${thingsboard.commonDataSourceRoot}</thingsboard.commonDataSourceRoot>
+                    </systemPropertyVariables>
                 </configuration>
                 <executions>
                     <execution>
-                        <goals>
-                            <goal>integration-test</goal>
-                            <goal>verify</goal>
-                        </goals>
+                        <id>default-test</id>
+                        <phase>none</phase>
+                    </execution>
+                    <execution>
+                        <id>unit-tests</id>
+                        <configuration>
+                            <includes>
+                                <include>**/*Test.java</include>
+                            </includes>
+                            <excludes>
+                                <exclude>**/*IT.java</exclude>
+                            </excludes>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>integration-tests</id>
+                        <configuration>
+                            <reportsDirectory>${project.build.directory}/failsafe-reports</reportsDirectory>
+                            <includes>
+                                <include>**/*IT.java</include>
+                            </includes>
+                            <excludes>
+                                <exclude>**/*Test.java</exclude>
+                            </excludes>
+                        </configuration>
                     </execution>
                 </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>check-dependencies</id>
+                        <configuration>
+                            <ignoredUnusedDeclaredDependencies>
+                                <!-- Verified false positive: Guava future types are used by main DAO/writer code. -->
+                                <ignoredUnusedDeclaredDependency>com.google.guava:guava</ignoredUnusedDeclaredDependency>
+                                <!-- Verified false positive: TableSessionPoolBuilder is used to create the IoTDB table session pool. -->
+                                <ignoredUnusedDeclaredDependency>org.apache.iotdb:iotdb-session</ignoredUnusedDeclaredDependency>
+                                <!-- Test/runtime-only dependencies required by the unit and integration test classpath. -->
+                                <ignoredUnusedDeclaredDependency>org.junit.jupiter:junit-jupiter</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.assertj:assertj-core</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.hibernate.validator:hibernate-validator</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.mockito:mockito-junit-jupiter</ignoredUnusedDeclaredDependency>
+                            </ignoredUnusedDeclaredDependencies>
+                            <ignoredUsedUndeclaredDependencies>
+                                <!-- Transitive API surfaces intentionally supplied by the IoTDB and Spring Boot dependencies. -->
+                                <ignoredUsedUndeclaredDependency>org.apache.iotdb:isession</ignoredUsedUndeclaredDependency>
+                                <ignoredUsedUndeclaredDependency>org.apache.tsfile:tsfile</ignoredUsedUndeclaredDependency>
+                                <ignoredUsedUndeclaredDependency>org.apache.tsfile:common</ignoredUsedUndeclaredDependency>
+                                <ignoredUsedUndeclaredDependency>org.apache.iotdb:service-rpc</ignoredUsedUndeclaredDependency>
+                                <ignoredUsedUndeclaredDependency>org.springframework.boot:spring-boot</ignoredUsedUndeclaredDependency>
+                                <!-- The junit-jupiter aggregate supplies junit-jupiter-api on the test classpath. -->
+                                <ignoredUsedUndeclaredDependency>org.junit.jupiter:junit-jupiter-api</ignoredUsedUndeclaredDependency>
+                            </ignoredUsedUndeclaredDependencies>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.rat</groupId>
+                <artifactId>apache-rat-plugin</artifactId>
+                <configuration>
+                    <excludes combine.children="append">
+                        <!-- Mockito extension resource content must stay a single implementation id. -->
+                        <exclude>src/test/resources/mockito-extensions/org.mockito.plugins.MockMaker</exclude>
+                    </excludes>
+                </configuration>
             </plugin>
         </plugins>
     </build>

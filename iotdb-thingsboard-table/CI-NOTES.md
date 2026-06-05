@@ -30,16 +30,26 @@ is not a GitHub Actions workflow.
   `mvn compile -DskipTests`
 - Run unit tests:
   `mvn test`
-- Validate the local stack file:
-  `docker compose -f docker-compose.test.yml config`
+- Validate the local stack files:
+  `docker compose -f docker-compose.test.yml config` and
+  `docker compose -f docker-compose.bench.yml config`
+- Run the TC-1 ingestion-throughput smoke benchmark (design doc section 7) only
+  when Docker is available; it runs in the `integration-test` phase, not the
+  unit run. Select it by tag group (a global `-Dtest=` would override both
+  surefire executions' filters and leak the Docker IT into the unit phase):
+  `mvn integration-test -Dgroups=benchmark`
 - Run an integration profile only when Docker is available and required
   environment values are set:
-  `TB_POSTGRES_USER=<postgres-user> TB_POSTGRES_PASSWORD=<postgres-password> IOTDB_USERNAME=<iotdb-user> IOTDB_PASSWORD=<iotdb-password>`
+
+  ```bash
+  TB_POSTGRES_USER=<postgres-user> TB_POSTGRES_PASSWORD=<postgres-password> \
+    IOTDB_USERNAME=<iotdb-user> IOTDB_PASSWORD=<iotdb-password>
+  ```
 
 ## Notes
 
 - Keep this file inside the module. Do not copy it to `.github/workflows`.
 - Do not store passwords, tokens, or local hostnames in CI configuration.
 - Keep the Docker image tags aligned with the preflight result for this module
-  scaffold.
-- Add reactor and GitHub Actions wiring only after the Wk 2/Wk 3 scope gate.
+  deliverable.
+- Add reactor and GitHub Actions wiring only after the relevant scope gate.

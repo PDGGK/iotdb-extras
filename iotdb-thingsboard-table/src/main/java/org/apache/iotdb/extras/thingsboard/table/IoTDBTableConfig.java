@@ -18,13 +18,13 @@
 
 package org.apache.iotdb.extras.thingsboard.table;
 
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
-
-import javax.validation.constraints.Max;
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotBlank;
 
 /**
  * Configuration properties for the IoTDB Table Mode DAO backend. Bound from {@code iotdb.*} in
@@ -45,6 +45,12 @@ public class IoTDBTableConfig {
   @Max(1024)
   private int sessionPoolSize = 8;
 
+  @NotBlank private String database = "thingsboard";
+
+  /**
+   * Affects ThingsBoard storage data-point accounting only; it does not configure IoTDB physical
+   * retention.
+   */
   @Min(-1)
   private long defaultTtlMs = -1L;
 
@@ -56,4 +62,69 @@ public class IoTDBTableConfig {
   private int connectionTimeoutMs = 5000;
 
   private boolean enableCompression = false;
+
+  @Valid private Ts ts = new Ts();
+
+  @Valid private Attributes attributes = new Attributes();
+
+  @Data
+  public static class Ts {
+    @Valid private Save save = new Save();
+    @Valid private Read read = new Read();
+  }
+
+  /**
+   * Entity-attribute DAO configuration, bound from {@code iotdb.attributes.*}. Independent of
+   * {@code iotdb.ts.*} because the attribute DAO routes separately from the time-series DAOs.
+   */
+  @Data
+  public static class Attributes {
+    /**
+     * Cluster routing acknowledgement for the entity-attribute DAO. The IoTDB Table Mode attribute
+     * write path is delete-then-insert under a per-identity in-JVM lock, which converges only
+     * inside a single JVM; cross-node single-writer safety is the operator's responsibility. When
+     * the DAO is activated this must be set explicitly to one of {@code sticky-routing} (all writes
+     * for a given identity are pinned to one node) or {@code disabled} (single-node / acknowledged
+     * best-effort); any other value (including the empty default) fails fast at construction. See
+     * the GSOC-304 Wk5 decision note section 3.5.
+     */
+    private String clusterMode = "";
+  }
+
+  @Data
+  public static class Read {
+    @Min(1)
+    private int threads = 4;
+
+    @Min(1)
+    private int queueCapacity = 10000;
+  }
+
+  @Data
+  public static class Save {
+    @Min(1)
+    private int batchSize = 500;
+
+    @Min(1)
+    private long maxLingerMs = 20L;
+
+    @Min(1)
+    private int queueCapacity = 50000;
+
+    @Min(1)
+    private long shutdownDrainTimeoutMs = 5000L;
+
+    @Min(1)
+    @Max(1)
+    private int flushThreads = 1;
+
+    @Min(1)
+    private int retryMaxAttempts = 3;
+
+    @Min(0)
+    private long retryInitialBackoffMs = 50L;
+
+    @Min(0)
+    private long retryMaxBackoffMs = 1000L;
+  }
 }
