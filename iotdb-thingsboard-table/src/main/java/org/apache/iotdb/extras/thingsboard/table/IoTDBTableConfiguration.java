@@ -23,6 +23,7 @@ import org.apache.iotdb.session.pool.TableSessionPoolBuilder;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -46,16 +47,25 @@ public class IoTDBTableConfiguration {
             .nodeUrls(List.of(nodeUrl))
             .user(config.getUsername())
             .password(config.getPassword())
+            .database(config.getDatabase())
             .maxSize(config.getSessionPoolSize())
             .connectionTimeoutInMs(config.getConnectionTimeoutMs())
             .enableIoTDBRpcCompression(config.isEnableCompression())
             .build();
     log.info(
-        "IoTDB Table Mode session pool initialized: nodeUrl={}, poolSize={}, compression={}, defaultTtlMs={}",
+        "IoTDB Table Mode session pool initialized: nodeUrl={}, database={}, poolSize={}, compression={}, storageAccountingDefaultTtlMs={}",
         nodeUrl,
+        config.getDatabase(),
         config.getSessionPoolSize(),
         config.isEnableCompression(),
         config.getDefaultTtlMs());
     return pool;
+  }
+
+  @Bean
+  @ConditionalOnProperty(name = "database.ts.type", havingValue = "iotdb-table")
+  public IoTDBTableTimeseriesWriter timeseriesWriter(
+      ITableSessionPool tableSessionPool, IoTDBTableConfig config) {
+    return new IoTDBTableTimeseriesWriter(tableSessionPool, config);
   }
 }

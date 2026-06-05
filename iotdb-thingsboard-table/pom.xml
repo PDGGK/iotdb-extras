@@ -36,19 +36,28 @@
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <iotdb.version>2.0.8</iotdb.version>
+        <guava.version>32.1.3-jre</guava.version>
+        <jakarta.validation-api.version>3.0.2</jakarta.validation-api.version>
         <junit.jupiter.version>5.10.2</junit.jupiter.version>
         <lombok.version>1.18.42</lombok.version>
         <mockito.version>5.21.0</mockito.version>
         <testcontainers.version>1.21.3</testcontainers.version>
+        <thingsboard.version>4.3.1.1</thingsboard.version>
         <maven.compiler.plugin.version>3.13.0</maven.compiler.plugin.version>
-        <maven.failsafe.plugin.version>3.2.5</maven.failsafe.plugin.version>
+        <maven.jar.plugin.version>3.3.0</maven.jar.plugin.version>
         <maven.surefire.plugin.version>3.2.5</maven.surefire.plugin.version>
+        <maven.failsafe.plugin.version>3.2.5</maven.failsafe.plugin.version>
     </properties>
     <dependencies>
         <dependency>
             <groupId>org.apache.iotdb</groupId>
             <artifactId>iotdb-session</artifactId>
             <version>${iotdb.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>${guava.version}</version>
         </dependency>
         <dependency>
             <groupId>org.springframework</groupId>
@@ -102,7 +111,7 @@
         <dependency>
             <groupId>org.hibernate.validator</groupId>
             <artifactId>hibernate-validator</artifactId>
-            <version>6.2.5.Final</version>
+            <version>8.0.2.Final</version>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -146,35 +155,136 @@
                         </path>
                     </annotationProcessorPaths>
                 </configuration>
+                <executions>
+                    <execution>
+                        <id>default-compile</id>
+                        <configuration>
+                            <!--
+                                Fallback compile-only ThingsBoard surface.
+                                The real org.thingsboard.common:data:${thingsboard.version} artifact could not be
+                                installed in the network-restricted local Maven repo during this pass. These sources
+                                are available only to javac and are excluded from the built jar below; replace this
+                                source root with a provided-scope org.thingsboard.common:data dependency once the
+                                upstream artifact is resolvable.
+                            -->
+                            <compileSourceRoots>
+                                <compileSourceRoot>${project.basedir}/src/main/java</compileSourceRoot>
+                                <compileSourceRoot>${project.basedir}/src/provided/java</compileSourceRoot>
+                            </compileSourceRoots>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>${maven.jar.plugin.version}</version>
+                <configuration>
+                    <excludes>
+                        <!--
+                            Exclude the compile-only ThingsBoard surface (src/provided) from the built jar so
+                            the stub classes never shadow the real org.thingsboard types on the deployment
+                            classpath. javac sees them at compile time; the artifact ships only the IoTDB DAO code.
+                        -->
+                        <exclude>org/thingsboard/**</exclude>
+                    </excludes>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${maven.surefire.plugin.version}</version>
-                <configuration>
-                    <includes>
-                        <include>**/*Test.java</include>
-                    </includes>
-                    <excludes>
-                        <exclude>**/*IT.java</exclude>
-                    </excludes>
-                </configuration>
+                <executions>
+                    <!--
+                        Surefire runs the unit tests (*Test.java) only. The iotdb-extras parent
+                        also binds a surefire integration-tests execution as a stopgap, but its
+                        own TODO and the connectors modules run integration tests via the failsafe
+                        plugin; this module follows that convention (see maven-failsafe-plugin
+                        below), so both the implicit default-test run and the inherited surefire
+                        integration-tests execution are disabled here.
+                    -->
+                    <execution>
+                        <id>default-test</id>
+                        <phase>none</phase>
+                    </execution>
+                    <execution>
+                        <id>integration-tests</id>
+                        <phase>none</phase>
+                    </execution>
+                    <execution>
+                        <id>unit-tests</id>
+                        <goals>
+                            <goal>test</goal>
+                        </goals>
+                        <phase>test</phase>
+                        <configuration>
+                            <includes>
+                                <include>**/*Test.java</include>
+                            </includes>
+                            <excludes>
+                                <exclude>**/*IT.java</exclude>
+                            </excludes>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
                 <version>${maven.failsafe.plugin.version}</version>
                 <configuration>
+                    <!--
+                        Run integration tests against target/classes rather than the packaged jar.
+                        Strategy F excludes the compile-only ThingsBoard surface (org/thingsboard/**,
+                        see maven-jar-plugin above) from the jar, so the default failsafe behaviour
+                        of testing the artifact would fail to load the stub types (e.g. TsKvEntry)
+                        that the standalone container IT constructs.
+                    -->
+                    <classesDirectory>${project.build.outputDirectory}</classesDirectory>
                     <includes>
                         <include>**/*IT.java</include>
                     </includes>
                 </configuration>
                 <executions>
                     <execution>
+                        <id>run-integration-tests</id>
                         <goals>
                             <goal>integration-test</goal>
                             <goal>verify</goal>
                         </goals>
+                        <phase>integration-test</phase>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>check-dependencies</id>
+                        <configuration>
+                            <ignoredUnusedDeclaredDependencies>
+                                <!-- Verified false positive: Guava future types are used by main DAO/writer code. -->
+                                <ignoredUnusedDeclaredDependency>com.google.guava:guava</ignoredUnusedDeclaredDependency>
+                                <!-- Verified false positive: TableSessionPoolBuilder is used to create the IoTDB table session pool. -->
+                                <ignoredUnusedDeclaredDependency>org.apache.iotdb:iotdb-session</ignoredUnusedDeclaredDependency>
+                                <!-- Test/runtime-only dependencies required by the unit and integration test classpath. -->
+                                <ignoredUnusedDeclaredDependency>org.junit.jupiter:junit-jupiter</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.assertj:assertj-core</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.hibernate.validator:hibernate-validator</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.mockito:mockito-junit-jupiter</ignoredUnusedDeclaredDependency>
+                            </ignoredUnusedDeclaredDependencies>
+                            <ignoredUsedUndeclaredDependencies>
+                                <!-- Transitive API surfaces intentionally supplied by the IoTDB and Spring Boot dependencies. -->
+                                <ignoredUsedUndeclaredDependency>org.apache.iotdb:isession</ignoredUsedUndeclaredDependency>
+                                <ignoredUsedUndeclaredDependency>org.apache.tsfile:tsfile</ignoredUsedUndeclaredDependency>
+                                <ignoredUsedUndeclaredDependency>org.apache.tsfile:common</ignoredUsedUndeclaredDependency>
+                                <ignoredUsedUndeclaredDependency>org.apache.iotdb:service-rpc</ignoredUsedUndeclaredDependency>
+                                <ignoredUsedUndeclaredDependency>org.springframework.boot:spring-boot</ignoredUsedUndeclaredDependency>
+                                <!-- The junit-jupiter aggregate supplies junit-jupiter-api on the test classpath. -->
+                                <ignoredUsedUndeclaredDependency>org.junit.jupiter:junit-jupiter-api</ignoredUsedUndeclaredDependency>
+                            </ignoredUsedUndeclaredDependencies>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>

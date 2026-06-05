@@ -18,13 +18,13 @@
 
 package org.apache.iotdb.extras.thingsboard.table;
 
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
-
-import javax.validation.constraints.Max;
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotBlank;
 
 /**
  * Configuration properties for the IoTDB Table Mode DAO backend. Bound from {@code iotdb.*} in
@@ -45,6 +45,12 @@ public class IoTDBTableConfig {
   @Max(1024)
   private int sessionPoolSize = 8;
 
+  @NotBlank private String database = "thingsboard";
+
+  /**
+   * Affects ThingsBoard storage data-point accounting only; it does not configure IoTDB physical
+   * retention.
+   */
   @Min(-1)
   private long defaultTtlMs = -1L;
 
@@ -56,4 +62,35 @@ public class IoTDBTableConfig {
   private int connectionTimeoutMs = 5000;
 
   private boolean enableCompression = false;
+
+  @Valid private Ts ts = new Ts();
+
+  @Data
+  public static class Ts {
+    @Valid private Save save = new Save();
+  }
+
+  @Data
+  public static class Save {
+    @Min(1)
+    private int batchSize = 500;
+
+    @Min(1)
+    private long maxLingerMs = 20L;
+
+    @Min(1)
+    private int queueCapacity = 50000;
+
+    @Min(1)
+    private long shutdownDrainTimeoutMs = 5000L;
+
+    @Min(1)
+    private int retryMaxAttempts = 3;
+
+    @Min(0)
+    private long retryInitialBackoffMs = 50L;
+
+    @Min(0)
+    private long retryMaxBackoffMs = 1000L;
+  }
 }
