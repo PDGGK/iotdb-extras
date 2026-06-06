@@ -39,6 +39,7 @@ public class IoTDBTableConfiguration {
   @ConditionalOnExpression(
       "'${database.ts.type:}'.equalsIgnoreCase('iotdb-table') "
           + "or '${database.ts_latest.type:}'.equalsIgnoreCase('iotdb-table') "
+          + "or '${database.attributes.type:}'.equalsIgnoreCase('iotdb-table') "
           + "or '${iotdb.labels.enabled:false}'.equalsIgnoreCase('true')")
   public ITableSessionPool tableSessionPool(IoTDBTableConfig config) {
     String nodeUrl = config.getHost() + ":" + config.getPort();
@@ -67,5 +68,20 @@ public class IoTDBTableConfiguration {
   public IoTDBTableTimeseriesWriter timeseriesWriter(
       ITableSessionPool tableSessionPool, IoTDBTableConfig config) {
     return new IoTDBTableTimeseriesWriter(tableSessionPool, config);
+  }
+
+  /**
+   * Entity-attribute DAO, activated by {@code database.attributes.type=iotdb-table} (Phase-1
+   * selector pending upstream ThingsBoard confirmation; see {@link IoTDBTableAttributesDao}). It is
+   * declared as an explicit {@code @Bean} (taking the pool as a parameter) rather than a
+   * component-scanned {@code @Repository}, so the pool is guaranteed to exist when the DAO is
+   * created and the {@code @ConditionalOnBean} bean-ordering trap is avoided. The {@code @Bean}
+   * destroy method drains the DAO's IO executor on shutdown.
+   */
+  @Bean(destroyMethod = "destroy")
+  @ConditionalOnProperty(name = "database.attributes.type", havingValue = "iotdb-table")
+  public IoTDBTableAttributesDao attributesDao(
+      ITableSessionPool tableSessionPool, IoTDBTableConfig config) {
+    return new IoTDBTableAttributesDao(tableSessionPool, config);
   }
 }

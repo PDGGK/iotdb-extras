@@ -187,6 +187,7 @@
                             classpath. javac sees them at compile time; the artifact ships only the IoTDB DAO code.
                         -->
                         <exclude>org/thingsboard/**</exclude>
+                        <exclude>org/apache/commons/**</exclude>
                     </excludes>
                 </configuration>
             </plugin>

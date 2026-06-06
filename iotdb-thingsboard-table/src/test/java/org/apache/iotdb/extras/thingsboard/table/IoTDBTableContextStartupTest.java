@@ -108,6 +108,54 @@ class IoTDBTableContextStartupTest {
   }
 
   @Test
+  void attributesTypeActivation_createsPoolAndAttributesDao() {
+    contextRunner
+        .withPropertyValues(
+            "database.attributes.type=iotdb-table",
+            "iotdb.attributes.cluster-mode=sticky-routing",
+            "iotdb.host=localhost",
+            "iotdb.port=6667",
+            "iotdb.username=root",
+            "iotdb.password=root",
+            "iotdb.session-pool-size=8",
+            "iotdb.connection-timeout-ms=5000")
+        .run(
+            context -> {
+              assertTrue(context.containsBean("tableSessionPool"));
+              assertTrue(context.containsBean("attributesDao"));
+              assertTrue(context.getBean(IoTDBTableAttributesDao.class) != null);
+              assertFalse(context.containsBeanDefinition("ioTDBTableTimeseriesDao"));
+              assertFalse(context.containsBeanDefinition("ioTDBTableLatestDao"));
+            });
+  }
+
+  @Test
+  void attributesTypeActivation_failsFastWhenClusterModeUnset() {
+    contextRunner
+        .withPropertyValues(
+            "database.attributes.type=iotdb-table",
+            "iotdb.host=localhost",
+            "iotdb.port=6667",
+            "iotdb.username=root",
+            "iotdb.password=root",
+            "iotdb.session-pool-size=8",
+            "iotdb.connection-timeout-ms=5000")
+        .run(
+            context -> {
+              assertTrue(context.getStartupFailure() != null);
+              assertTrue(rootCauseMessage(context.getStartupFailure()).contains("cluster_mode"));
+            });
+  }
+
+  private static String rootCauseMessage(Throwable t) {
+    Throwable cause = t;
+    while (cause.getCause() != null && cause.getCause() != cause) {
+      cause = cause.getCause();
+    }
+    return cause.getMessage() == null ? "" : cause.getMessage();
+  }
+
+  @Test
   void uppercaseSelector_stillActivatesPoolAndDao() {
     contextRunner
         .withPropertyValues(
