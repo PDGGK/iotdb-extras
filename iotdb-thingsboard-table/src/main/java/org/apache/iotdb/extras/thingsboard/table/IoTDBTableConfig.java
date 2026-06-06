@@ -68,6 +68,16 @@ public class IoTDBTableConfig {
   @Data
   public static class Ts {
     @Valid private Save save = new Save();
+    @Valid private Read read = new Read();
+  }
+
+  @Data
+  public static class Read {
+    @Min(1)
+    private int threads = 4;
+
+    @Min(1)
+    private int queueCapacity = 10000;
   }
 
   @Data
@@ -83,6 +93,10 @@ public class IoTDBTableConfig {
 
     @Min(1)
     private long shutdownDrainTimeoutMs = 5000L;
+
+    @Min(1)
+    @Max(1)
+    private int flushThreads = 1;
 
     @Min(1)
     private int retryMaxAttempts = 3;

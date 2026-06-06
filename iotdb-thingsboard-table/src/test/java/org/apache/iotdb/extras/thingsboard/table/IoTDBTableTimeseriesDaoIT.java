@@ -34,7 +34,11 @@ import org.testcontainers.utility.DockerImageName;
 import org.thingsboard.server.common.data.EntityType;
 import org.thingsboard.server.common.data.id.EntityId;
 import org.thingsboard.server.common.data.id.TenantId;
+import org.thingsboard.server.common.data.kv.BaseDeleteTsKvQuery;
+import org.thingsboard.server.common.data.kv.BaseReadTsKvQuery;
 import org.thingsboard.server.common.data.kv.DataType;
+import org.thingsboard.server.common.data.kv.ReadTsKvQuery;
+import org.thingsboard.server.common.data.kv.ReadTsKvQueryResult;
 import org.thingsboard.server.common.data.kv.TsKvEntry;
 
 import java.io.InputStream;
@@ -47,11 +51,14 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * GSOC-304 Wk 2 integration tests for the IoTDB Table Mode timeseries WRITE path against a real
- * IoTDB 2.0.8 container. Writes are verified by reading the telemetry table back through raw
- * table-session SQL (the DAO read path is introduced in a later week).
+ * GSOC-304 Wk 3 integration tests for the IoTDB Table Mode timeseries DAO against a real IoTDB
+ * 2.0.8 container: the Wk 2 WRITE path (verified by reading the telemetry table back through raw
+ * table-session SQL) plus the Wk 3 RAW (non-aggregated) READ path and the DELETE path exercised
+ * through the DAO. The time-bucketed aggregation read path is introduced in Wk 8 and is not
+ * exercised here.
  */
 @Tag("integration")
 @Testcontainers(disabledWithoutDocker = true)
@@ -161,6 +168,201 @@ class IoTDBTableTimeseriesDaoIT {
         assertEquals(500, dao.stats().flushed());
         assertTelemetryRows(pool, scope, "mixed-499", 1, 1);
       } finally {
+        writer.destroy();
+      }
+    }
+  }
+
+  @Test
+  void saveThenFindAllAsync_roundTripsAllFiveTypes() throws Exception {
+    TestScope scope =
+        scope(
+            "read_all_types",
+            "33333333-3333-3333-3333-333333333304",
+            "44444444-4444-4444-4444-444444444404");
+    bootstrapSchema(scope.database());
+    try (ITableSessionPool pool = newPool(scope.database())) {
+      IoTDBTableConfig config = config(5);
+      IoTDBTableTimeseriesWriter writer = new IoTDBTableTimeseriesWriter(pool, config);
+      IoTDBTableTimeseriesDao dao = new IoTDBTableTimeseriesDao(pool, writer, config);
+      try {
+        saveAll(
+            dao,
+            scope,
+            List.of(
+                entry(4000L, "bool", DataType.BOOLEAN, true),
+                entry(4001L, "long", DataType.LONG, 42L),
+                entry(4002L, "double", DataType.DOUBLE, 4.2D),
+                entry(4003L, "string", DataType.STRING, "value"),
+                entry(4004L, "json", DataType.JSON, "{\"v\":1}")));
+
+        List<ReadTsKvQuery> queries =
+            List.of(
+                new BaseReadTsKvQuery("bool", 3990L, 4010L, 1, "ASC"),
+                new BaseReadTsKvQuery("long", 3990L, 4010L, 1, "ASC"),
+                new BaseReadTsKvQuery("double", 3990L, 4010L, 1, "ASC"),
+                new BaseReadTsKvQuery("string", 3990L, 4010L, 1, "ASC"),
+                new BaseReadTsKvQuery("json", 3990L, 4010L, 1, "ASC"));
+        List<ReadTsKvQueryResult> results =
+            dao.findAllAsync(scope.tenantId(), scope.entityId(), queries)
+                .get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+        assertSingleEntry(results.get(0), 4000L, "bool", DataType.BOOLEAN, true);
+        assertSingleEntry(results.get(1), 4001L, "long", DataType.LONG, 42L);
+        assertSingleEntry(results.get(2), 4002L, "double", DataType.DOUBLE, 4.2D);
+        assertSingleEntry(results.get(3), 4003L, "string", DataType.STRING, "value");
+        assertSingleEntry(results.get(4), 4004L, "json", DataType.JSON, "{\"v\":1}");
+      } finally {
+        dao.destroy();
+        writer.destroy();
+      }
+    }
+  }
+
+  @Test
+  void findAllAsync_honorsOrderAndLimit() throws Exception {
+    TestScope scope =
+        scope(
+            "read_order_limit",
+            "33333333-3333-3333-3333-333333333305",
+            "44444444-4444-4444-4444-444444444405");
+    bootstrapSchema(scope.database());
+    try (ITableSessionPool pool = newPool(scope.database())) {
+      IoTDBTableConfig config = config(3);
+      IoTDBTableTimeseriesWriter writer = new IoTDBTableTimeseriesWriter(pool, config);
+      IoTDBTableTimeseriesDao dao = new IoTDBTableTimeseriesDao(pool, writer, config);
+      try {
+        saveAll(
+            dao,
+            scope,
+            List.of(
+                entry(5000L, "ordered", DataType.LONG, 1L),
+                entry(5001L, "ordered", DataType.LONG, 2L),
+                entry(5002L, "ordered", DataType.LONG, 3L)));
+
+        ReadTsKvQuery desc = new BaseReadTsKvQuery("ordered", 4990L, 5010L, 2, "DESC");
+        ReadTsKvQuery asc = new BaseReadTsKvQuery("ordered", 4990L, 5010L, 2, "ASC");
+        List<ReadTsKvQueryResult> results =
+            dao.findAllAsync(scope.tenantId(), scope.entityId(), List.of(desc, asc))
+                .get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+        assertTimestamps(results.get(0), 5002L, 5001L);
+        assertTimestamps(results.get(1), 5000L, 5001L);
+      } finally {
+        dao.destroy();
+        writer.destroy();
+      }
+    }
+  }
+
+  @Test
+  void findAllAsync_usesHalfOpenEnd() throws Exception {
+    TestScope scope =
+        scope(
+            "read_half_open",
+            "33333333-3333-3333-3333-333333333306",
+            "44444444-4444-4444-4444-444444444406");
+    bootstrapSchema(scope.database());
+    try (ITableSessionPool pool = newPool(scope.database())) {
+      IoTDBTableConfig config = config(3);
+      IoTDBTableTimeseriesWriter writer = new IoTDBTableTimeseriesWriter(pool, config);
+      IoTDBTableTimeseriesDao dao = new IoTDBTableTimeseriesDao(pool, writer, config);
+      try {
+        saveAll(
+            dao,
+            scope,
+            List.of(
+                entry(6000L, "window", DataType.LONG, 1L),
+                entry(6001L, "window", DataType.LONG, 2L),
+                entry(6002L, "window", DataType.LONG, 3L)));
+
+        ReadTsKvQuery query = new BaseReadTsKvQuery("window", 6000L, 6002L, 10, "ASC");
+        ReadTsKvQueryResult result =
+            dao.findAllAsync(scope.tenantId(), scope.entityId(), List.of(query))
+                .get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                .get(0);
+
+        assertTimestamps(result, 6000L, 6001L);
+      } finally {
+        dao.destroy();
+        writer.destroy();
+      }
+    }
+  }
+
+  @Test
+  void remove_deletesOnlyIdentityKeyAndHalfOpenRange() throws Exception {
+    TestScope scope =
+        scope(
+            "remove_half_open",
+            "33333333-3333-3333-3333-333333333307",
+            "44444444-4444-4444-4444-444444444407");
+    bootstrapSchema(scope.database());
+    try (ITableSessionPool pool = newPool(scope.database())) {
+      IoTDBTableConfig config = config(4);
+      IoTDBTableTimeseriesWriter writer = new IoTDBTableTimeseriesWriter(pool, config);
+      IoTDBTableTimeseriesDao dao = new IoTDBTableTimeseriesDao(pool, writer, config);
+      try {
+        saveAll(
+            dao,
+            scope,
+            List.of(
+                entry(7000L, "target", DataType.LONG, 1L),
+                entry(7001L, "target", DataType.LONG, 2L),
+                entry(7002L, "target", DataType.LONG, 3L),
+                entry(7001L, "other", DataType.LONG, 4L)));
+
+        dao.remove(
+                scope.tenantId(), scope.entityId(), new BaseDeleteTsKvQuery("target", 7000L, 7002L))
+            .get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+        ReadTsKvQuery target = new BaseReadTsKvQuery("target", 6990L, 7010L, 10, "ASC");
+        ReadTsKvQuery other = new BaseReadTsKvQuery("other", 6990L, 7010L, 10, "ASC");
+        List<ReadTsKvQueryResult> results =
+            dao.findAllAsync(scope.tenantId(), scope.entityId(), List.of(target, other))
+                .get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+        assertTimestamps(results.get(0), 7002L);
+        assertTimestamps(results.get(1), 7001L);
+      } finally {
+        dao.destroy();
+        writer.destroy();
+      }
+    }
+  }
+
+  @Test
+  void keyEscaping_roundTrip() throws Exception {
+    TestScope scope =
+        scope(
+            "key_escape",
+            "33333333-3333-3333-3333-333333333308",
+            "44444444-4444-4444-4444-444444444408");
+    bootstrapSchema(scope.database());
+    try (ITableSessionPool pool = newPool(scope.database())) {
+      IoTDBTableConfig config = config(1);
+      IoTDBTableTimeseriesWriter writer = new IoTDBTableTimeseriesWriter(pool, config);
+      IoTDBTableTimeseriesDao dao = new IoTDBTableTimeseriesDao(pool, writer, config);
+      try {
+        String key = "a'b";
+        saveAll(dao, scope, List.of(entry(8000L, key, DataType.LONG, 8L)));
+
+        ReadTsKvQuery query = new BaseReadTsKvQuery(key, 7990L, 8010L, 10, "ASC");
+        ReadTsKvQueryResult readBeforeDelete =
+            dao.findAllAsync(scope.tenantId(), scope.entityId(), List.of(query))
+                .get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                .get(0);
+        assertTimestamps(readBeforeDelete, 8000L);
+
+        dao.remove(scope.tenantId(), scope.entityId(), new BaseDeleteTsKvQuery(key, 7990L, 8010L))
+            .get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        ReadTsKvQueryResult readAfterDelete =
+            dao.findAllAsync(scope.tenantId(), scope.entityId(), List.of(query))
+                .get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                .get(0);
+        assertTrue(readAfterDelete.getData().isEmpty());
+      } finally {
+        dao.destroy();
         writer.destroy();
       }
     }
@@ -298,6 +500,43 @@ class IoTDBTableTimeseriesDaoIT {
 
   private TestTsKvEntry entry(long ts, String key, DataType dataType, Object value) {
     return new TestTsKvEntry(ts, key, dataType, value);
+  }
+
+  private void saveAll(IoTDBTableTimeseriesDao dao, TestScope scope, List<TestTsKvEntry> entries)
+      throws Exception {
+    List<ListenableFuture<Integer>> futures = new ArrayList<>();
+    for (TestTsKvEntry entry : entries) {
+      futures.add(dao.save(scope.tenantId(), scope.entityId(), entry, 0));
+    }
+    for (ListenableFuture<Integer> future : futures) {
+      assertEquals(1, future.get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+    }
+  }
+
+  private void assertSingleEntry(
+      ReadTsKvQueryResult result, long ts, String key, DataType dataType, Object value) {
+    assertEquals(1, result.getData().size());
+    TsKvEntry entry = result.getData().get(0);
+    assertEquals(ts, entry.getTs());
+    assertEquals(key, entry.getKey());
+    assertEquals(dataType, entry.getDataType());
+    assertEquals(value, entry.getValue());
+    assertEquals(String.valueOf(value), entry.getValueAsString());
+    assertEquals(ts, result.getLastEntryTs());
+  }
+
+  private void assertTimestamps(ReadTsKvQueryResult result, long... expectedTs) {
+    assertEquals(expectedTs.length, result.getData().size());
+    for (int i = 0; i < expectedTs.length; i++) {
+      assertEquals(expectedTs[i], result.getData().get(i).getTs());
+    }
+    if (expectedTs.length > 0) {
+      long maxTs = expectedTs[0];
+      for (long ts : expectedTs) {
+        maxTs = Math.max(maxTs, ts);
+      }
+      assertEquals(maxTs, result.getLastEntryTs());
+    }
   }
 
   private record TestScope(String database, TenantId tenantId, EntityId entityId) {}

@@ -19,6 +19,7 @@
 package org.apache.iotdb.extras.thingsboard.table;
 
 import org.apache.iotdb.isession.ITableSession;
+import org.apache.iotdb.isession.SessionDataSet;
 import org.apache.iotdb.isession.pool.ITableSessionPool;
 import org.apache.iotdb.rpc.IoTDBConnectionException;
 import org.apache.iotdb.rpc.StatementExecutionException;
@@ -33,9 +34,15 @@ import org.mockito.ArgumentCaptor;
 import org.thingsboard.server.common.data.EntityType;
 import org.thingsboard.server.common.data.id.EntityId;
 import org.thingsboard.server.common.data.id.TenantId;
+import org.thingsboard.server.common.data.kv.BaseDeleteTsKvQuery;
+import org.thingsboard.server.common.data.kv.BaseReadTsKvQuery;
+import org.thingsboard.server.common.data.kv.BasicTsKvEntry;
 import org.thingsboard.server.common.data.kv.DataType;
+import org.thingsboard.server.common.data.kv.ReadTsKvQuery;
+import org.thingsboard.server.common.data.kv.ReadTsKvQueryResult;
 import org.thingsboard.server.common.data.kv.TsKvEntry;
 
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -52,21 +59,26 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * GSOC-304 Wk 2 unit tests for the IoTDB Table Mode timeseries WRITE path: multi-row Tablet
- * mapping, batch flushing, connection retry, back-pressure rejection and graceful-shutdown drain.
- * Read, delete and aggregation are introduced in later weeks and are not exercised here.
+ * GSOC-304 Wk 3 unit tests for the IoTDB Table Mode timeseries DAO: the Wk 2 WRITE path (multi-row
+ * Tablet mapping, batch flushing, connection retry, back-pressure rejection and graceful-shutdown
+ * drain) plus the Wk 3 RAW (non-aggregated) READ path, the DELETE path and the bounded read
+ * thread-pool. The time-bucketed aggregation read path is introduced in Wk 8 and is not exercised
+ * here.
  */
 class IoTDBTableTimeseriesDaoTest {
   private static final TenantId TENANT_ID =
@@ -595,6 +607,308 @@ class IoTDBTableTimeseriesDaoTest {
     assertEquals(1, context.dao().stats().flushed());
   }
 
+  @Test
+  void findAllAsync_rawBuildsHalfOpenSql() throws Exception {
+    TestContext context = newContext(config(10, 1000L, 100), false);
+    SessionDataSet emptyDataSet = dataSet();
+    when(context.session().executeQueryStatement(anyString())).thenReturn(emptyDataSet);
+
+    ReadTsKvQuery query = new BaseReadTsKvQuery("temperature", 100L, 200L, 17, "asc");
+    ReadTsKvQueryResult result =
+        context
+            .dao()
+            .findAllAsync(TENANT_ID, ENTITY_ID, List.of(query))
+            .get(3, TimeUnit.SECONDS)
+            .get(0);
+
+    assertEquals(query.getId(), result.getQueryId());
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    verify(context.session(), timeout(3000)).executeQueryStatement(sql.capture());
+    assertEquals(
+        "SELECT time, bool_v, long_v, double_v, str_v, json_v FROM telemetry "
+            + "WHERE tenant_id='11111111-1111-1111-1111-111111111111' "
+            + "AND entity_type='DEVICE' "
+            + "AND entity_id='22222222-2222-2222-2222-222222222222' "
+            + "AND key='temperature' AND time >= 100 AND time < 200 "
+            + "ORDER BY time ASC LIMIT 17",
+        sql.getValue());
+  }
+
+  @Test
+  void findAllAsync_mapsFiveTypesToBasicTsKvEntry() throws Exception {
+    TestContext context = newContext(config(10, 1000L, 100), false);
+    SessionDataSet allTypesDataSet =
+        dataSet(
+            row(10L, "bool_v", true),
+            row(11L, "long_v", 42L),
+            row(12L, "double_v", 3.5D),
+            row(13L, "str_v", "abc"),
+            row(14L, "json_v", "{\"v\":1}"));
+    when(context.session().executeQueryStatement(anyString())).thenReturn(allTypesDataSet);
+
+    ReadTsKvQuery query = new BaseReadTsKvQuery("sensor", 0L, 20L, 10, "DESC");
+    List<TsKvEntry> data =
+        context
+            .dao()
+            .findAllAsync(TENANT_ID, ENTITY_ID, List.of(query))
+            .get(3, TimeUnit.SECONDS)
+            .get(0)
+            .getData();
+
+    assertEquals(5, data.size());
+    assertMappedEntry(data.get(0), 10L, "sensor", DataType.BOOLEAN, true);
+    assertMappedEntry(data.get(1), 11L, "sensor", DataType.LONG, 42L);
+    assertMappedEntry(data.get(2), 12L, "sensor", DataType.DOUBLE, 3.5D);
+    assertMappedEntry(data.get(3), 13L, "sensor", DataType.STRING, "abc");
+    assertMappedEntry(data.get(4), 14L, "sensor", DataType.JSON, "{\"v\":1}");
+  }
+
+  @Test
+  void findAllAsync_preservesOneResultPerQueryAndQueryId() throws Exception {
+    TestContext context = newContext(config(10, 1000L, 100), false);
+    SessionDataSet firstDataSet = dataSet();
+    SessionDataSet secondDataSet = dataSet();
+    when(context.session().executeQueryStatement(anyString()))
+        .thenReturn(firstDataSet, secondDataSet);
+
+    ReadTsKvQuery first = new BaseReadTsKvQuery("first", 10L, 20L, 1, "DESC");
+    ReadTsKvQuery second = new BaseReadTsKvQuery("second", 20L, 30L, 1, "DESC");
+    List<ReadTsKvQueryResult> results =
+        context
+            .dao()
+            .findAllAsync(TENANT_ID, ENTITY_ID, List.of(first, second))
+            .get(3, TimeUnit.SECONDS);
+
+    assertEquals(2, results.size());
+    assertEquals(first.getId(), results.get(0).getQueryId());
+    assertEquals(second.getId(), results.get(1).getQueryId());
+  }
+
+  @Test
+  void findAllAsync_lastEntryTsIsMaxReturnedTs() throws Exception {
+    TestContext context = newContext(config(10, 1000L, 100), false);
+    SessionDataSet dataSet = dataSet(row(30L, "long_v", 3L), row(10L, "long_v", 1L));
+    when(context.session().executeQueryStatement(anyString())).thenReturn(dataSet);
+
+    ReadTsKvQuery query = new BaseReadTsKvQuery("counter", 0L, 40L, 10, "DESC");
+    ReadTsKvQueryResult result =
+        context
+            .dao()
+            .findAllAsync(TENANT_ID, ENTITY_ID, List.of(query))
+            .get(3, TimeUnit.SECONDS)
+            .get(0);
+
+    assertEquals(30L, result.getLastEntryTs());
+  }
+
+  @Test
+  void findAllAsync_emptyResult() throws Exception {
+    TestContext context = newContext(config(10, 1000L, 100), false);
+    SessionDataSet emptyDataSet = dataSet();
+    when(context.session().executeQueryStatement(anyString())).thenReturn(emptyDataSet);
+
+    ReadTsKvQuery noRows = new BaseReadTsKvQuery("empty", 123L, 456L, 10, "DESC");
+    ReadTsKvQueryResult result =
+        context
+            .dao()
+            .findAllAsync(TENANT_ID, ENTITY_ID, List.of(noRows))
+            .get(3, TimeUnit.SECONDS)
+            .get(0);
+
+    assertEquals(List.of(), result.getData());
+    assertEquals(123L, result.getLastEntryTs());
+
+    ReadTsKvQuery zeroLimit = new BaseReadTsKvQuery("empty", 123L, 456L, 0, "DESC");
+    ReadTsKvQueryResult zeroLimitResult =
+        context
+            .dao()
+            .findAllAsync(TENANT_ID, ENTITY_ID, List.of(zeroLimit))
+            .get(3, TimeUnit.SECONDS)
+            .get(0);
+    assertEquals(List.of(), zeroLimitResult.getData());
+    assertEquals(123L, zeroLimitResult.getLastEntryTs());
+    verify(context.session(), times(1)).executeQueryStatement(anyString());
+  }
+
+  @Test
+  void findAllAsync_escapesKeyAndRejectsBadOrder() throws Exception {
+    TestContext context = newContext(config(10, 1000L, 100), false);
+    SessionDataSet emptyDataSet = dataSet();
+    when(context.session().executeQueryStatement(anyString())).thenReturn(emptyDataSet);
+
+    ReadTsKvQuery escaped = new BaseReadTsKvQuery("a'b", 1L, 2L, 1, "desc");
+    context.dao().findAllAsync(TENANT_ID, ENTITY_ID, List.of(escaped)).get(3, TimeUnit.SECONDS);
+
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    verify(context.session(), timeout(3000)).executeQueryStatement(sql.capture());
+    assertTrue(sql.getValue().contains("key='a''b'"));
+
+    ReadTsKvQuery badOrder = new BaseReadTsKvQuery("key", 1L, 2L, 1, "sideways");
+    assertFutureFailsWith(
+        context.dao().findAllAsync(TENANT_ID, ENTITY_ID, List.of(badOrder)),
+        IllegalArgumentException.class);
+    verify(context.session(), times(1)).executeQueryStatement(anyString());
+  }
+
+  @Test
+  void readDeleteAndSaveRejectBlankTelemetryKeysBeforeSqlOrEnqueue() throws Exception {
+    TestContext context = newContext(config(10, 1000L, 100), false);
+
+    assertFutureFailsWith(
+        context
+            .dao()
+            .findAllAsync(
+                TENANT_ID, ENTITY_ID, List.of(new BaseReadTsKvQuery("  ", 1L, 2L, 1, "DESC"))),
+        IllegalArgumentException.class);
+    assertFutureFailsWith(
+        context.dao().remove(TENANT_ID, ENTITY_ID, new BaseDeleteTsKvQuery("\t", 1L, 2L)),
+        IllegalArgumentException.class);
+    assertFutureFailsWith(
+        context.dao().save(TENANT_ID, ENTITY_ID, entry(1L, " ", DataType.LONG, 1L), 0),
+        IllegalArgumentException.class);
+
+    assertEquals(0, context.dao().stats().enqueued());
+    verify(context.session(), never()).executeQueryStatement(anyString());
+    verify(context.session(), never()).executeNonQueryStatement(anyString());
+    verify(context.session(), never()).insert(any(Tablet.class));
+  }
+
+  @Test
+  void remove_buildsHalfOpenDeleteSql() throws Exception {
+    TestContext context = newContext(config(10, 1000L, 100), false);
+
+    assertNull(
+        context
+            .dao()
+            .remove(TENANT_ID, ENTITY_ID, new BaseDeleteTsKvQuery("temperature", 100L, 200L))
+            .get(3, TimeUnit.SECONDS));
+
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    verify(context.session(), timeout(3000)).executeNonQueryStatement(sql.capture());
+    assertEquals(
+        "DELETE FROM telemetry WHERE tenant_id='11111111-1111-1111-1111-111111111111' "
+            + "AND entity_type='DEVICE' "
+            + "AND entity_id='22222222-2222-2222-2222-222222222222' "
+            + "AND key='temperature' AND time >= 100 AND time < 200",
+        sql.getValue());
+  }
+
+  @Test
+  void readExecutorDoesNotUseWriter() throws Exception {
+    TestContext context = newContext(config(10, 1000L, 100), false);
+    SessionDataSet emptyDataSet = dataSet();
+    when(context.session().executeQueryStatement(anyString())).thenReturn(emptyDataSet);
+
+    ReadTsKvQuery query = new BaseReadTsKvQuery("temperature", 1L, 2L, 1, "DESC");
+    context.dao().findAllAsync(TENANT_ID, ENTITY_ID, List.of(query)).get(3, TimeUnit.SECONDS);
+    context
+        .dao()
+        .remove(TENANT_ID, ENTITY_ID, new BaseDeleteTsKvQuery("temperature", 1L, 2L))
+        .get(3, TimeUnit.SECONDS);
+
+    assertEquals(0, context.dao().stats().enqueued());
+    verify(context.session(), never()).insert(any(Tablet.class));
+  }
+
+  @Test
+  void destroyCompletesRunningAndQueuedReadFutures() throws Exception {
+    IoTDBTableConfig config = config(10, 1000L, 100);
+    config.getTs().getSave().setShutdownDrainTimeoutMs(100L);
+    TestContext context = newContext(config, false);
+    CountDownLatch readStarted = new CountDownLatch(1);
+    CountDownLatch releaseRead = new CountDownLatch(1);
+    when(context.session().executeQueryStatement(anyString()))
+        .thenAnswer(
+            invocation -> {
+              readStarted.countDown();
+              releaseRead.await(5, TimeUnit.SECONDS);
+              return dataSet();
+            });
+
+    ListenableFuture<List<ReadTsKvQueryResult>> running =
+        context
+            .dao()
+            .findAllAsync(
+                TENANT_ID, ENTITY_ID, List.of(new BaseReadTsKvQuery("running", 1L, 2L, 1, "DESC")));
+    assertTrue(readStarted.await(3, TimeUnit.SECONDS));
+    ListenableFuture<List<ReadTsKvQueryResult>> queued =
+        context
+            .dao()
+            .findAllAsync(
+                TENANT_ID, ENTITY_ID, List.of(new BaseReadTsKvQuery("queued", 1L, 2L, 1, "DESC")));
+
+    context.dao().destroy();
+
+    assertFutureDoneWithin(running, 3, TimeUnit.SECONDS);
+    assertFutureDoneWithin(queued, 3, TimeUnit.SECONDS);
+    assertFutureFailsWith(running, InterruptedException.class);
+    assertFutureFailsWith(queued, IoTDBTableDaoShuttingDownException.class);
+    releaseRead.countDown();
+  }
+
+  @Test
+  void findAllAsyncReturnsFailedFutureWhenReadQueueIsFull() throws Exception {
+    IoTDBTableConfig config = config(10, 1000L, 100);
+    config.getTs().getRead().setQueueCapacity(1);
+    TestContext context = newContext(config, false);
+    CountDownLatch readStarted = new CountDownLatch(1);
+    CountDownLatch releaseRead = new CountDownLatch(1);
+    when(context.session().executeQueryStatement(anyString()))
+        .thenAnswer(
+            invocation -> {
+              readStarted.countDown();
+              releaseRead.await(5, TimeUnit.SECONDS);
+              return dataSet();
+            });
+
+    ListenableFuture<List<ReadTsKvQueryResult>> running =
+        context
+            .dao()
+            .findAllAsync(
+                TENANT_ID, ENTITY_ID, List.of(new BaseReadTsKvQuery("running", 1L, 2L, 1, "DESC")));
+    assertTrue(readStarted.await(3, TimeUnit.SECONDS));
+    ListenableFuture<List<ReadTsKvQueryResult>> queued =
+        context
+            .dao()
+            .findAllAsync(
+                TENANT_ID, ENTITY_ID, List.of(new BaseReadTsKvQuery("queued", 1L, 2L, 1, "DESC")));
+    ListenableFuture<List<ReadTsKvQueryResult>> rejected =
+        context
+            .dao()
+            .findAllAsync(
+                TENANT_ID,
+                ENTITY_ID,
+                List.of(new BaseReadTsKvQuery("rejected", 1L, 2L, 1, "DESC")));
+
+    assertFutureFailsWith(rejected, IoTDBTableReadQueueFullException.class);
+    releaseRead.countDown();
+    assertEquals(1, running.get(3, TimeUnit.SECONDS).size());
+    assertEquals(1, queued.get(3, TimeUnit.SECONDS).size());
+  }
+
+  @Test
+  void readAndDeleteReturnFailedFuturesAfterDestroy() throws Exception {
+    TestContext context = newContext(config(10, 1000L, 100), false);
+
+    context.dao().destroy();
+
+    assertFutureFailsWith(
+        context
+            .dao()
+            .findAllAsync(
+                TENANT_ID,
+                ENTITY_ID,
+                List.of(new BaseReadTsKvQuery("after-destroy", 1L, 2L, 1, "DESC"))),
+        IoTDBTableDaoShuttingDownException.class);
+    assertFutureFailsWith(
+        context
+            .dao()
+            .remove(TENANT_ID, ENTITY_ID, new BaseDeleteTsKvQuery("after-destroy", 1L, 2L)),
+        IoTDBTableDaoShuttingDownException.class);
+    verify(context.session(), never()).executeQueryStatement(anyString());
+    verify(context.session(), never()).executeNonQueryStatement(anyString());
+  }
+
   private TestContext newContext(IoTDBTableConfig config, boolean startWorker)
       throws IoTDBConnectionException {
     ITableSessionPool pool = mock(ITableSessionPool.class);
@@ -613,6 +927,7 @@ class IoTDBTableTimeseriesDaoTest {
     config.getTs().getSave().setQueueCapacity(queueCapacity);
     config.getTs().getSave().setRetryInitialBackoffMs(1L);
     config.getTs().getSave().setRetryMaxBackoffMs(1L);
+    config.getTs().getRead().setThreads(1);
     return config;
   }
 
@@ -654,6 +969,48 @@ class IoTDBTableTimeseriesDaoTest {
     return exception.getCause();
   }
 
+  private void assertFutureDoneWithin(ListenableFuture<?> future, long timeout, TimeUnit unit)
+      throws Exception {
+    long deadline = System.nanoTime() + unit.toNanos(timeout);
+    while (!future.isDone() && System.nanoTime() < deadline) {
+      Thread.sleep(10L);
+    }
+    assertTrue(future.isDone(), "future did not complete within " + timeout + " " + unit);
+  }
+
+  private void assertMappedEntry(
+      TsKvEntry entry, long ts, String key, DataType dataType, Object value) {
+    assertInstanceOf(BasicTsKvEntry.class, entry);
+    assertEquals(ts, entry.getTs());
+    assertEquals(key, entry.getKey());
+    assertEquals(dataType, entry.getDataType());
+    assertEquals(value, entry.getValue());
+    assertEquals(String.valueOf(value), entry.getValueAsString());
+  }
+
+  private SessionDataSet dataSet(MockTelemetryRow... rows)
+      throws IoTDBConnectionException, StatementExecutionException {
+    SessionDataSet dataSet = mock(SessionDataSet.class);
+    SessionDataSet.DataIterator iterator = mock(SessionDataSet.DataIterator.class);
+    AtomicInteger index = new AtomicInteger(-1);
+    when(dataSet.iterator()).thenReturn(iterator);
+    when(iterator.next()).thenAnswer(invocation -> index.incrementAndGet() < rows.length);
+    when(iterator.isNull(anyString()))
+        .thenAnswer(invocation -> rows[index.get()].isNull(invocation.getArgument(0)));
+    when(iterator.getBoolean(anyString())).thenAnswer(invocation -> rows[index.get()].value());
+    when(iterator.getLong(anyString())).thenAnswer(invocation -> rows[index.get()].value());
+    when(iterator.getDouble(anyString())).thenAnswer(invocation -> rows[index.get()].value());
+    when(iterator.getString(anyString()))
+        .thenAnswer(invocation -> String.valueOf(rows[index.get()].value()));
+    when(iterator.getTimestamp("time"))
+        .thenAnswer(invocation -> new Timestamp(rows[index.get()].ts()));
+    return dataSet;
+  }
+
+  private MockTelemetryRow row(long ts, String column, Object value) {
+    return new MockTelemetryRow(ts, column, value);
+  }
+
   private TestTsKvEntry entry(long ts, String key, DataType dataType, Object value) {
     return entry(ts, key, dataType, value, 1);
   }
@@ -665,6 +1022,12 @@ class IoTDBTableTimeseriesDaoTest {
 
   private int tbDataPoints(String value) {
     return Math.max(1, (value.length() + 511) / 512);
+  }
+
+  private record MockTelemetryRow(long ts, String valueColumn, Object value) {
+    private boolean isNull(String column) {
+      return !valueColumn.equals(column);
+    }
   }
 
   private record TestContext(
