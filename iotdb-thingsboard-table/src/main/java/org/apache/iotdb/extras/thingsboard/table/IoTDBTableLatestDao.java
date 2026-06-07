@@ -21,14 +21,14 @@ package org.apache.iotdb.extras.thingsboard.table;
 import org.apache.iotdb.isession.pool.ITableSessionPool;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Repository;
 
 /**
  * Latest telemetry DAO skeleton for the IoTDB Table Mode backend.
  *
- * <p>Spring activation: database.ts_latest.type=iotdb-table.
+ * <p>Inert scaffold for PR-1: this class is intentionally not annotated as a Spring bean. The
+ * latest-telemetry SPI is implemented in a later PR (design doc section 6.3), so registering it now
+ * would expose a {@code database.ts_latest.type=iotdb-table} selector that ThingsBoard cannot bind
+ * to a working DAO.
  *
  * <p>Strategy F keeps this class free of ThingsBoard imports and interface clauses until the DAO
  * dependency path is decided.
@@ -37,14 +37,14 @@ import org.springframework.stereotype.Repository;
  * @since GSOC-304 Wk 1 scaffold
  */
 @Slf4j
-@Repository
-@ConditionalOnBean(ITableSessionPool.class)
-@ConditionalOnProperty(name = "database.ts_latest.type", havingValue = "iotdb-table")
 public class IoTDBTableLatestDao extends IoTDBTableBaseDao {
+  // Not annotated @Repository yet — the latest-telemetry path activates in a later PR (design doc
+  // section 6.3); auto-registering it now would advertise database.ts_latest.type=iotdb-table with
+  // no working DAO behind it.
   public IoTDBTableLatestDao(ITableSessionPool tableSessionPool) {
     super(tableSessionPool);
   }
 
   // TODO(Strategy F): add TimeseriesLatestDao binding after dependency resolution is decided.
-  // TODO(GSOC-304 Wk 4): add latest telemetry method bodies.
+  // TODO(GSOC-304 Wk 4): add latest telemetry method bodies, then re-add the activation property.
 }

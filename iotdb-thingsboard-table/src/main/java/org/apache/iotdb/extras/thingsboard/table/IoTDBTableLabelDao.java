@@ -21,14 +21,14 @@ package org.apache.iotdb.extras.thingsboard.table;
 import org.apache.iotdb.isession.pool.ITableSessionPool;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Repository;
 
 /**
  * Label DAO skeleton for an optional IoTDB Table Mode label path.
  *
- * <p>Spring activation: iotdb.labels.enabled=true.
+ * <p>Inert scaffold for PR-1: this class is intentionally not annotated as a Spring bean. The
+ * optional label path ships in a later PR (design doc section 6.3), so registering it now would
+ * expose an {@code iotdb.labels.enabled=true} selector that ThingsBoard cannot bind to a working
+ * DAO.
  *
  * <p>Strategy F keeps this class free of ThingsBoard imports and interface clauses until the DAO
  * dependency path is decided.
@@ -37,14 +37,15 @@ import org.springframework.stereotype.Repository;
  * @since GSOC-304 Wk 1 scaffold
  */
 @Slf4j
-@Repository
-@ConditionalOnBean(ITableSessionPool.class)
-@ConditionalOnProperty(name = "iotdb.labels.enabled", havingValue = "true")
 public class IoTDBTableLabelDao extends IoTDBTableBaseDao {
+  // Not annotated @Repository yet — the optional label path ships in a later PR (design doc
+  // section 6.3); auto-registering it now would advertise iotdb.labels.enabled=true with no working
+  // DAO behind it.
   public IoTDBTableLabelDao(ITableSessionPool tableSessionPool) {
     super(tableSessionPool);
   }
 
   // TODO(Strategy F): add label DAO binding after dependency resolution is decided.
-  // TODO(GSOC-304 Phase 2): add optional label method bodies only if label mirroring ships.
+  // TODO(GSOC-304 Phase 2): add optional label method bodies only if label mirroring ships, then
+  // re-add the activation property.
 }

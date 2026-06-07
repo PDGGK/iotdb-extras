@@ -21,8 +21,10 @@
 
 # CI Notes
 
-This file is a future CI template for the `iotdb-thingsboard-table` module. It
-is not a GitHub Actions workflow.
+The module is wired into the `iotdb-extras` parent reactor `<modules>`, so the
+root build already compiles and tests it. This file is a developer reference of
+the local checks for the `iotdb-thingsboard-table` module; it is not itself a
+GitHub Actions workflow.
 
 ## Candidate Checks
 
@@ -40,6 +42,4 @@ is not a GitHub Actions workflow.
 
 - Keep this file inside the module. Do not copy it to `.github/workflows`.
 - Do not store passwords, tokens, or local hostnames in CI configuration.
-- Keep the Docker image tags aligned with the preflight result for this module
-  scaffold.
-- Add reactor and GitHub Actions wiring only after the Wk 2/Wk 3 scope gate.
+- Keep the Docker image tags aligned with the preflight result for this module.

@@ -68,46 +68,6 @@ class IoTDBTableContextStartupTest {
   }
 
   @Test
-  void tsLatestTypeActivation_createsPoolAndLatest() {
-    contextRunner
-        .withPropertyValues(
-            "database.ts_latest.type=iotdb-table",
-            "iotdb.host=localhost",
-            "iotdb.port=6667",
-            "iotdb.username=root",
-            "iotdb.password=root",
-            "iotdb.session-pool-size=8",
-            "iotdb.connection-timeout-ms=5000")
-        .run(
-            context -> {
-              assertTrue(context.containsBean("tableSessionPool"));
-              assertTrue(context.containsBeanDefinition("ioTDBTableLatestDao"));
-              assertFalse(context.containsBeanDefinition("ioTDBTableTimeseriesDao"));
-              assertFalse(context.containsBeanDefinition("ioTDBTableLabelDao"));
-            });
-  }
-
-  @Test
-  void labelsEnabledActivation_createsPoolAndLabel() {
-    contextRunner
-        .withPropertyValues(
-            "iotdb.labels.enabled=true",
-            "iotdb.host=localhost",
-            "iotdb.port=6667",
-            "iotdb.username=root",
-            "iotdb.password=root",
-            "iotdb.session-pool-size=8",
-            "iotdb.connection-timeout-ms=5000")
-        .run(
-            context -> {
-              assertTrue(context.containsBean("tableSessionPool"));
-              assertTrue(context.containsBeanDefinition("ioTDBTableLabelDao"));
-              assertFalse(context.containsBeanDefinition("ioTDBTableTimeseriesDao"));
-              assertFalse(context.containsBeanDefinition("ioTDBTableLatestDao"));
-            });
-  }
-
-  @Test
   void uppercaseSelector_stillActivatesPoolAndDao() {
     contextRunner
         .withPropertyValues(
