@@ -165,6 +165,11 @@ public class IoTDBTableTimeseriesDao extends IoTDBTableBaseDao
 
     try {
       String key = requireTelemetryKey(tsKvEntry.getKey());
+      // Mirror the read/delete shutdown-race guard: once the DAO has stopped accepting work, fail
+      // fast instead of enqueueing into a writer that is (or is about to be) draining/destroyed.
+      if (!accepting.get()) {
+        return Futures.immediateFailedFuture(shuttingDownException());
+      }
       return timeseriesWriter.enqueue(
           new IoTDBTablePendingSave(
               tenantId.getId().toString(),
@@ -261,7 +266,9 @@ public class IoTDBTableTimeseriesDao extends IoTDBTableBaseDao
     // GSOC-304 Wk 3: the positive-interval, time-bucketed aggregation read path is delivered in
     // Wk 8; only the RAW (Aggregation.NONE or interval < 1) branch is implemented now.
     throw new UnsupportedOperationException(
-        "IoTDB Table Mode aggregation read path is not implemented yet (GSOC-304 Wk 8)");
+        "Time-bucketed aggregation is not supported by this incremental IoTDB Table Mode backend"
+            + " yet; raw read, write and delete are available -- aggregation lands in a follow-up"
+            + " PR (GSOC-304 Wk 8).");
   }
 
   private ReadTsKvQueryResult readRawQuery(

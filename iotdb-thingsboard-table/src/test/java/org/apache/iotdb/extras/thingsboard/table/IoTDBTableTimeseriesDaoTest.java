@@ -909,6 +909,22 @@ class IoTDBTableTimeseriesDaoTest {
     verify(context.session(), never()).executeNonQueryStatement(anyString());
   }
 
+  @Test
+  void saveReturnsFailedFutureAfterDestroy() throws Exception {
+    // Mirror the read/delete-after-destroy contract: once the DAO has been destroyed it must stop
+    // accepting writes too, returning a failed future rather than enqueueing into a draining
+    // writer.
+    TestContext context = newContext(config(10, 1000L, 100), false);
+
+    context.dao().destroy();
+
+    assertFutureFailsWith(
+        context.dao().save(TENANT_ID, ENTITY_ID, entry(1L, "after-destroy", DataType.LONG, 1L), 0),
+        IoTDBTableDaoShuttingDownException.class);
+    assertEquals(0, context.dao().stats().enqueued());
+    verify(context.session(), never()).insert(any(Tablet.class));
+  }
+
   private TestContext newContext(IoTDBTableConfig config, boolean startWorker)
       throws IoTDBConnectionException {
     ITableSessionPool pool = mock(ITableSessionPool.class);

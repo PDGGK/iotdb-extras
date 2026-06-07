@@ -52,6 +52,35 @@ This is **PR-1 of a staged series** (design doc section 6.3). It delivers the
 latest telemetry, and attribute/label DAOs are inert scaffolds in this PR and are
 implemented in later PRs.
 
+> **This is an incremental / experimental backend.** Activating it with
+> `database.ts.type=iotdb-table` routes ThingsBoard historical telemetry through
+> IoTDB Table Mode for **raw read + write + delete only**. **Time-bucketed
+> aggregation is NOT implemented yet** — an aggregation query (positive interval)
+> throws `UnsupportedOperationException`; it lands in a follow-up PR (design doc
+> section 6.3, Wk 8). Operators should expect raw historical reads, writes, and
+> deletes to work and aggregation dashboards to fail until that follow-up ships.
+
+## Configuration
+
+The backend is bound from `iotdb.*` Spring properties (see `IoTDBTableConfig`).
+Key activation and operational flags:
+
+| Property | Default | Meaning |
+| --- | --- | --- |
+| `database.ts.type` | _(unset)_ | Set to `iotdb-table` to activate the IoTDB Table Mode timeseries DAO. |
+| `iotdb.host` / `iotdb.port` | `127.0.0.1` / `6667` | IoTDB node address. |
+| `iotdb.username` / `iotdb.password` | `root` / `root` | IoTDB credentials. |
+| `iotdb.database` | `thingsboard` | Target IoTDB database. |
+| `iotdb.session-pool-size` | `8` | Table session pool size. |
+| `iotdb.schema.bootstrap` | `true` | When `true`, the module runs an idempotent startup bootstrap that reads `schema-iotdb-table.sql` from the classpath and creates the `telemetry` / `entity_attributes` tables (and database) on a fresh IoTDB before the first write. Set to `false` if you manage the schema out-of-band. |
+
+The module is a Spring Boot **auto-configuration**
+(`IoTDBTableConfiguration`), registered via
+`META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`
+(and `META-INF/spring.factories` as a fallback), so it activates in a real
+ThingsBoard deployment without the host application having to component-scan
+`org.apache.iotdb.extras`.
+
 ## Build
 
 The module builds from the repository root as part of the reactor:
@@ -93,6 +122,8 @@ docker compose -f docker-compose.test.yml down -v
 ## Status
 
 PR-1 of the staged series (design doc section 6.3): `IoTDBTableBaseDao` plus the
-`IoTDBTableTimeseriesDao` write, raw-read, and delete paths are implemented.
-Aggregation, latest telemetry, and attribute/label DAOs are inert scaffolds and
-land in later PRs.
+`IoTDBTableTimeseriesDao` write, raw-read, and delete paths are implemented. This
+is an **incremental / experimental** backend: time-bucketed aggregation is **not
+implemented yet** (a positive-interval aggregation query throws
+`UnsupportedOperationException`), and latest-telemetry and attribute/label DAOs
+are inert scaffolds. Aggregation, latest, and attributes land in later PRs.

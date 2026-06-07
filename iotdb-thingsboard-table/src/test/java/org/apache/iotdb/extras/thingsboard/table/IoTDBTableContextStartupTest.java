@@ -22,7 +22,6 @@ import org.apache.iotdb.isession.pool.ITableSessionPool;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
-import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 
@@ -55,13 +54,17 @@ class IoTDBTableContextStartupTest {
             "iotdb.username=root",
             "iotdb.password=root",
             "iotdb.session-pool-size=8",
-            "iotdb.connection-timeout-ms=5000")
+            "iotdb.connection-timeout-ms=5000",
+            // Disable the startup schema bootstrap: this is an offline context test with no real
+            // IoTDB, so the bootstrap's afterPropertiesSet() must not try to open a session.
+            "iotdb.schema.bootstrap=false")
         .run(
             context -> {
               assertTrue(context.containsBean("tableSessionPool"));
               assertTrue(context.getBean(ITableSessionPool.class) != null);
               assertTrue(context.containsBeanDefinition("ioTDBTableTimeseriesDao"));
               assertTrue(context.getBean(IoTDBTableTimeseriesDao.class) != null);
+              assertFalse(context.containsBeanDefinition("schemaBootstrap"));
               assertFalse(context.containsBeanDefinition("ioTDBTableLatestDao"));
               assertFalse(context.containsBeanDefinition("ioTDBTableLabelDao"));
             });
@@ -77,7 +80,8 @@ class IoTDBTableContextStartupTest {
             "iotdb.username=root",
             "iotdb.password=root",
             "iotdb.session-pool-size=8",
-            "iotdb.connection-timeout-ms=5000")
+            "iotdb.connection-timeout-ms=5000",
+            "iotdb.schema.bootstrap=false")
         .run(
             context -> {
               assertTrue(context.containsBean("tableSessionPool"));
@@ -85,8 +89,11 @@ class IoTDBTableContextStartupTest {
             });
   }
 
+  // IoTDBTableConfiguration registers the DAO bean itself via its @Bean methods, so importing the
+  // auto-configuration is enough -- no extra @ComponentScan is needed here. This mirrors how a real
+  // ThingsBoard deployment activates the module purely through the Spring Boot auto-configuration
+  // import, without component-scanning org.apache.iotdb.extras.
   @Configuration
   @Import(IoTDBTableConfiguration.class)
-  @ComponentScan(basePackageClasses = IoTDBTableBaseDao.class)
   static class TableContextTestConfiguration {}
 }

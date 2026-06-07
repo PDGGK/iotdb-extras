@@ -36,7 +36,6 @@
         <module>connectors</module>
         <module>distributions</module>
         <module>iotdb-collector</module>
-        <module>iotdb-thingsboard-table</module>
         <module>mybatis-generator</module>
     </modules>
     <properties>
@@ -184,7 +183,7 @@
         <thrift.version>0.14.1</thrift.version>
         <!-- This was the last version to support Java 8 -->
         <tomcat.version>9.0.86</tomcat.version>
-        <tsfile.version>2.3.0</tsfile.version>
+        <tsfile.version>2.1.1</tsfile.version>
         <xz.version>1.9</xz.version>
         <zeppelin.version>0.11.1</zeppelin.version>
         <zstd-jni.version>1.5.5-5</zstd-jni.version>
@@ -2072,6 +2071,21 @@
             <properties>
                 <argLine>--add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED --add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED</argLine>
             </properties>
+        </profile>
+        <!--
+      The iotdb-thingsboard-table module compiles with release 17 (it uses records and other
+      Java 17 language features), so it cannot build on the JDK 8/11 reactor jobs. Gate it behind
+      a JDK 17+ activated profile instead of the default <modules> list so the 8/11 CI jobs skip it
+      while 17/21 still build and test it as part of the reactor.
+    -->
+        <profile>
+            <id>iotdb-thingsboard-table-jdk17</id>
+            <activation>
+                <jdk>[17,)</jdk>
+            </activation>
+            <modules>
+                <module>iotdb-thingsboard-table</module>
+            </modules>
         </profile>
         <profile>
             <id>with-springboot</id>
