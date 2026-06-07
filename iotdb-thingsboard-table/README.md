@@ -80,6 +80,50 @@ records/sec, error rate, and writer stats. See
 [`docs/benchmarks/README.md`](docs/benchmarks/README.md) for how to run it and
 for the smoke floor versus the full-profile `> 10K writes/sec` headline target.
 
+## Retention / TTL
+
+Physical retention is a **table-level** IoTDB property, set by the operator on
+the schema — not a per-data-point setting. IoTDB Table Mode expresses TTL as a
+retention window in **milliseconds**, given as a bare (unquoted) long literal,
+or the keyword `INF` (never expire) / `DEFAULT` (inherit the database default,
+which is `INF` on a fresh node). Quoted numbers (`'604800000'`) and duration
+forms (`'7d'`) are rejected by IoTDB 2.0.8.
+
+The shipped `schema-iotdb-table.sql` declares the `telemetry` table with
+`WITH (TTL=DEFAULT)`. To enable a concrete retention, an operator either edits
+the schema before bootstrap, e.g. 7 days:
+
+```sql
+CREATE TABLE telemetry (...) WITH (TTL=604800000);
+```
+
+or changes it at runtime on the live table:
+
+```sql
+ALTER TABLE telemetry SET PROPERTIES TTL=604800000;   -- 7 days, in ms
+ALTER TABLE telemetry SET PROPERTIES TTL=DEFAULT;     -- back to the db default
+```
+
+The effective TTL can be read back from `information_schema.tables` (the
+`ttl(ms)` column) or via `SHOW TABLES` (the `TTL(ms)` column). The
+`IoTDBTableTtlIT` integration test verifies all of this against real IoTDB
+2.0.8. It validates the TTL property mechanism only; it does not assert physical
+row eviction, because IoTDB TTL eviction is asynchronous and compaction-driven
+and so is not deterministic within a test.
+
+- **Phase-1 limitation: the per-save `ttl` argument is not honored per-row.**
+  The `TimeseriesDao.save(..., long ttl)` SPI carries a per-data-point TTL, but
+  IoTDB Table Mode TTL is table-wide; the two cannot be faithfully reconciled,
+  because physical retention can only be expressed at the table level. The
+  module therefore uses the per-save `ttl` only for ThingsBoard's storage
+  data-point accounting (`iotdb.defaultTtlMs` participates in that accounting
+  too) and never as a physical-retention directive. Operators who need physical
+  retention set it on the table as shown above. A config-driven,
+  module-applied table TTL (e.g. the DAO issuing
+  `ALTER TABLE telemetry SET PROPERTIES TTL=<iotdb.defaultTtlMs>` at startup) is
+  a possible future enhancement, deliberately deferred pending mentor input on
+  whether the module or the operator's schema should own retention DDL.
+
 ## Status
 
 Wk 1 scaffold — method bodies pending dev list feedback.
