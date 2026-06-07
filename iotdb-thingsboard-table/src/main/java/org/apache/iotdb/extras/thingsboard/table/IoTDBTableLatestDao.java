@@ -46,6 +46,7 @@ import org.thingsboard.server.common.data.kv.TsKvLatestRemovingResult;
 import org.thingsboard.server.dao.timeseries.TimeseriesLatestDao;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -77,12 +78,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  *       that the derived query naturally picks up. Same-timestamp overwrites are handled by IoTDB
  *       (writing the same {@code (tags, time)} overwrites the typed column).
  *   <li>{@link #removeLatest} performs no independent storage mutation: the historical {@code
- *       remove} (Wk3) already deleted the underlying telemetry, and the derived latest follows.
+ *       remove} path already deleted the underlying telemetry, and the derived latest follows.
  * </ul>
  *
  * <p>The key-discovery SPI methods ({@link #findAllKeysByDeviceProfileId}, {@link
- * #findAllKeysByEntityIds}, {@link #findAllKeysByEntityIdsAsync}) are deferred to GSOC-304 Wk 9 and
- * currently throw {@link UnsupportedOperationException}.
+ * #findAllKeysByEntityIds}, {@link #findAllKeysByEntityIdsAsync}) derive the distinct telemetry
+ * keys from the telemetry table. A device-profile lookup with a {@code null} profile returns the
+ * tenant-wide distinct keys; a specific profile returns no keys, because the telemetry table
+ * carries no device-profile membership (that lives in ThingsBoard's relational entity database).
  *
  * @see "GSOC-304 design doc section 6.0"
  * @since GSOC-304 Wk 4 latest DAO
@@ -167,7 +170,7 @@ public class IoTDBTableLatestDao extends IoTDBTableBaseDao
     Objects.requireNonNull(entityId, "entityId");
     Objects.requireNonNull(query, "query");
     String telemetryKey = requireTelemetryKey(query.getKey());
-    // No independent storage mutation: the historical Wk3 remove already deleted the underlying
+    // No independent storage mutation: the historical remove path already deleted the underlying
     // telemetry rows and the derived latest follows automatically. The result must still be HONEST
     // about whether a latest value was actually affected, because TB consumes isRemoved() as a real
     // delete signal (DefaultTelemetrySubscriptionService). Mirroring the reference
@@ -200,24 +203,53 @@ public class IoTDBTableLatestDao extends IoTDBTableBaseDao
   @Override
   public List<String> findAllKeysByDeviceProfileId(
       TenantId tenantId, DeviceProfileId deviceProfileId) {
-    // Key discovery is deferred to GSOC-304 Wk 9 (design doc 6.2 "key discovery methods").
-    throw new UnsupportedOperationException(
-        "IoTDB Table Mode latest key discovery not implemented yet (GSOC-304 Wk 9)");
+    Objects.requireNonNull(tenantId, "tenantId");
+    // Mirroring the reference SqlTimeseriesLatestDao: a null deviceProfileId is the "all profiles"
+    // path and must return the tenant-wide distinct keys, which the telemetry table CAN derive.
+    if (deviceProfileId == null) {
+      try {
+        return doFindAllKeysByTenant(tenantId);
+      } catch (RuntimeException e) {
+        throw e;
+      } catch (Exception e) {
+        throw new IllegalStateException("Failed to read latest telemetry keys by tenant", e);
+      }
+    }
+    // Non-null profile lookup stays deferred for a structural reason, not a missing implementation:
+    // the IoTDB Table Mode telemetry table is tagged only by (tenant_id, entity_type, entity_id,
+    // key) -- it carries NO device_profile_id column (see schema-iotdb-table.sql), so the
+    // membership
+    // "which devices belong to profile P" simply does not exist in this store. ThingsBoard's
+    // relational backend answers this by JOINing the time-series keys against the relational device
+    // table (device.device_profile_id), which lives in ThingsBoard's entity database, not in IoTDB.
+    // Faking a tenant-wide or empty-but-pretending answer would silently widen or narrow attribute
+    // discovery, so the honest behaviour is to return no keys for a specific profile and let the
+    // caller's relational path own profile membership. (The null "all profiles" branch above is
+    // fully derivable from the telemetry table and is implemented.)
+    return Collections.emptyList();
   }
 
   @Override
   public List<String> findAllKeysByEntityIds(TenantId tenantId, List<EntityId> entityIds) {
-    // Key discovery is deferred to GSOC-304 Wk 9 (design doc 6.2 "key discovery methods").
-    throw new UnsupportedOperationException(
-        "IoTDB Table Mode latest key discovery not implemented yet (GSOC-304 Wk 9)");
+    Objects.requireNonNull(tenantId, "tenantId");
+    Objects.requireNonNull(entityIds, "entityIds");
+    // Synchronous SPI method: it runs on the calling thread (not the read executor), so the checked
+    // session/query failure is surfaced to the caller as an unchecked exception.
+    try {
+      return doFindAllKeysByEntityIds(tenantId, entityIds);
+    } catch (RuntimeException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new IllegalStateException("Failed to read latest telemetry keys by entity ids", e);
+    }
   }
 
   @Override
   public ListenableFuture<List<String>> findAllKeysByEntityIdsAsync(
       TenantId tenantId, List<EntityId> entityIds) {
-    // Key discovery is deferred to GSOC-304 Wk 9 (design doc 6.2 "key discovery methods").
-    throw new UnsupportedOperationException(
-        "IoTDB Table Mode latest key discovery not implemented yet (GSOC-304 Wk 9)");
+    Objects.requireNonNull(tenantId, "tenantId");
+    Objects.requireNonNull(entityIds, "entityIds");
+    return submitReadTask(() -> doFindAllKeysByEntityIds(tenantId, entityIds));
   }
 
   @Override
@@ -322,6 +354,62 @@ public class IoTDBTableLatestDao extends IoTDBTableBaseDao
         + " AND entity_id="
         + sqlString(entityId.getId().toString())
         + " GROUP BY key";
+  }
+
+  private List<String> doFindAllKeysByEntityIds(TenantId tenantId, List<EntityId> entityIds)
+      throws Exception {
+    if (entityIds.isEmpty()) {
+      return List.of();
+    }
+    String sql = buildFindAllKeysByEntityIdsSql(tenantId, entityIds);
+    List<String> keys = new ArrayList<>();
+    try (ITableSession session = tableSessionPool.getSession();
+        SessionDataSet dataSet = session.executeQueryStatement(sql)) {
+      SessionDataSet.DataIterator row = dataSet.iterator();
+      while (row.next()) {
+        keys.add(row.getString("key"));
+      }
+    }
+    return keys;
+  }
+
+  private List<String> doFindAllKeysByTenant(TenantId tenantId) throws Exception {
+    String sql =
+        "SELECT DISTINCT key FROM "
+            + TABLE_NAME
+            + " WHERE tenant_id="
+            + sqlString(tenantId.getId().toString());
+    List<String> keys = new ArrayList<>();
+    try (ITableSession session = tableSessionPool.getSession();
+        SessionDataSet dataSet = session.executeQueryStatement(sql)) {
+      SessionDataSet.DataIterator row = dataSet.iterator();
+      while (row.next()) {
+        keys.add(row.getString("key"));
+      }
+    }
+    return keys;
+  }
+
+  private String buildFindAllKeysByEntityIdsSql(TenantId tenantId, List<EntityId> entityIds) {
+    StringBuilder sql =
+        new StringBuilder("SELECT DISTINCT key FROM ")
+            .append(TABLE_NAME)
+            .append(" WHERE tenant_id=")
+            .append(sqlString(tenantId.getId().toString()))
+            .append(" AND (");
+    for (int i = 0; i < entityIds.size(); i++) {
+      EntityId entityId = Objects.requireNonNull(entityIds.get(i), "entityId");
+      if (i > 0) {
+        sql.append(" OR ");
+      }
+      sql.append("(entity_type=")
+          .append(sqlString(entityId.getEntityType().name()))
+          .append(" AND entity_id=")
+          .append(sqlString(entityId.getId().toString()))
+          .append(")");
+    }
+    sql.append(")");
+    return sql.toString();
   }
 
   private static TsKvEntry nullEntry(String key) {

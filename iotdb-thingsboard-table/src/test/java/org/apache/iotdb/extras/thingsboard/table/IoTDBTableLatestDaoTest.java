@@ -29,6 +29,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.thingsboard.server.common.data.EntityType;
+import org.thingsboard.server.common.data.id.DeviceProfileId;
 import org.thingsboard.server.common.data.id.EntityId;
 import org.thingsboard.server.common.data.id.TenantId;
 import org.thingsboard.server.common.data.kv.BaseDeleteTsKvQuery;
@@ -66,6 +67,8 @@ class IoTDBTableLatestDaoTest {
       new TenantId(UUID.fromString("11111111-1111-1111-1111-111111111111"));
   private static final EntityId ENTITY_ID =
       new TestEntityId(UUID.fromString("22222222-2222-2222-2222-222222222222"), EntityType.DEVICE);
+  private static final EntityId SECOND_ENTITY_ID =
+      new TestEntityId(UUID.fromString("33333333-3333-3333-3333-333333333333"), EntityType.ASSET);
 
   private final List<IoTDBTableLatestDao> daos = new ArrayList<>();
 
@@ -293,6 +296,92 @@ class IoTDBTableLatestDaoTest {
     verify(context.pool(), never()).getSession();
   }
 
+  @Test
+  void findAllKeysByEntityIds_buildsDistinctKeySqlAndCollectsKeys() throws Exception {
+    TestContext context = newContext();
+    SessionDataSet dataSet = dataSet(keyRow("temperature"), keyRow("humidity"));
+    when(context.session().executeQueryStatement(anyString())).thenReturn(dataSet);
+
+    List<String> keys =
+        context.dao().findAllKeysByEntityIds(TENANT_ID, List.of(ENTITY_ID, SECOND_ENTITY_ID));
+
+    assertEquals(List.of("temperature", "humidity"), keys);
+
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    verify(context.session(), timeout(3000)).executeQueryStatement(sql.capture());
+    assertEquals(
+        "SELECT DISTINCT key FROM telemetry "
+            + "WHERE tenant_id='11111111-1111-1111-1111-111111111111' "
+            + "AND ((entity_type='DEVICE' AND entity_id='22222222-2222-2222-2222-222222222222') "
+            + "OR (entity_type='ASSET' AND entity_id='33333333-3333-3333-3333-333333333333'))",
+        sql.getValue());
+  }
+
+  @Test
+  void findAllKeysByEntityIds_emptyListReturnsEmptyAndSkipsQuery() throws Exception {
+    TestContext context = newContext();
+
+    assertEquals(List.of(), context.dao().findAllKeysByEntityIds(TENANT_ID, List.of()));
+
+    verify(context.pool(), never()).getSession();
+  }
+
+  @Test
+  void findAllKeysByEntityIdsAsync_runsOnReadExecutor() throws Exception {
+    TestContext context = newContext();
+    SessionDataSet keysDataSet = dataSet(keyRow("speed"));
+    when(context.session().executeQueryStatement(anyString())).thenReturn(keysDataSet);
+
+    List<String> keys =
+        context
+            .dao()
+            .findAllKeysByEntityIdsAsync(TENANT_ID, List.of(ENTITY_ID))
+            .get(3, TimeUnit.SECONDS);
+
+    assertEquals(List.of("speed"), keys);
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    verify(context.session(), timeout(3000)).executeQueryStatement(sql.capture());
+    assertEquals(
+        "SELECT DISTINCT key FROM telemetry "
+            + "WHERE tenant_id='11111111-1111-1111-1111-111111111111' "
+            + "AND ((entity_type='DEVICE' AND entity_id='22222222-2222-2222-2222-222222222222'))",
+        sql.getValue());
+  }
+
+  @Test
+  void findAllKeysByDeviceProfileId_returnsEmptyDeferred() throws Exception {
+    TestContext context = newContext();
+
+    List<String> keys =
+        context
+            .dao()
+            .findAllKeysByDeviceProfileId(
+                TENANT_ID,
+                new DeviceProfileId(UUID.fromString("44444444-4444-4444-4444-444444444444")));
+
+    assertEquals(List.of(), keys);
+    verify(context.pool(), never()).getSession();
+  }
+
+  @Test
+  void findAllKeysByDeviceProfileId_nullProfileReturnsTenantWideDistinctKeys() throws Exception {
+    TestContext context = newContext();
+    // A null deviceProfileId is the "all profiles" path: return tenant-wide distinct keys
+    // (mirroring the reference SqlTimeseriesLatestDao.getKeysByTenantId).
+    SessionDataSet dataSet = dataSet(keyRow("temperature"), keyRow("humidity"));
+    when(context.session().executeQueryStatement(anyString())).thenReturn(dataSet);
+
+    List<String> keys = context.dao().findAllKeysByDeviceProfileId(TENANT_ID, null);
+
+    assertEquals(List.of("temperature", "humidity"), keys);
+    ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+    verify(context.session(), timeout(3000)).executeQueryStatement(sql.capture());
+    assertEquals(
+        "SELECT DISTINCT key FROM telemetry "
+            + "WHERE tenant_id='11111111-1111-1111-1111-111111111111'",
+        sql.getValue());
+  }
+
   private TestContext newContext() {
     ITableSessionPool pool = mock(ITableSessionPool.class);
     ITableSession session = mock(ITableSession.class);
@@ -353,6 +442,13 @@ class IoTDBTableLatestDaoTest {
     Map<String, Object> columns = new HashMap<>();
     columns.put("time", ts);
     columns.put(column, value);
+    return new MockRow(columns);
+  }
+
+  /** A DISTINCT key row exposing only the {@code key} column. */
+  private MockRow keyRow(String key) {
+    Map<String, Object> columns = new HashMap<>();
+    columns.put("key", key);
     return new MockRow(columns);
   }
 

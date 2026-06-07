@@ -33,6 +33,7 @@ import org.springframework.stereotype.Repository;
 import org.thingsboard.server.common.data.id.EntityId;
 import org.thingsboard.server.common.data.id.TenantId;
 import org.thingsboard.server.common.data.kv.Aggregation;
+import org.thingsboard.server.common.data.kv.AggregationParams;
 import org.thingsboard.server.common.data.kv.BasicTsKvEntry;
 import org.thingsboard.server.common.data.kv.BooleanDataEntry;
 import org.thingsboard.server.common.data.kv.DataType;
@@ -47,7 +48,9 @@ import org.thingsboard.server.common.data.kv.ReadTsKvQueryResult;
 import org.thingsboard.server.common.data.kv.StringDataEntry;
 import org.thingsboard.server.common.data.kv.TsKvEntry;
 import org.thingsboard.server.dao.timeseries.TimeseriesDao;
+import org.thingsboard.server.dao.util.TimeUtils;
 
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -73,10 +76,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  * real historical {@link TimeseriesDao} SPI.
  *
  * <p>GSOC-304 delivers the batch WRITE path ({@link #save}), the RAW (non-aggregated) historical
- * READ path ({@link #findAllAsync}), the DELETE path ({@link #remove}) and the {@code MILLISECONDS}
- * time-bucketed aggregation read path ({@link #readMillisecondsAggregatedQuery}), all driven
- * through a bounded read thread-pool. Calendar-interval ({@code WEEK}/{@code MONTH}/{@code
- * QUARTER}) aggregation is deferred to a later week.
+ * READ path ({@link #findAllAsync}), the DELETE path ({@link #remove}) and the time-bucketed
+ * aggregation read path: the fixed-width {@code MILLISECONDS} interval via {@link
+ * #readMillisecondsAggregatedQuery} and the calendar intervals ({@code WEEK}/{@code
+ * WEEK_ISO}/{@code MONTH}/{@code QUARTER}) via {@link #readCalendarAggregatedQuery}, all driven
+ * through a bounded read thread-pool.
  *
  * @see "GSOC-304 design doc section 6.2"
  * @since GSOC-304 Wk 1 scaffold
@@ -329,6 +333,33 @@ public class IoTDBTableTimeseriesDao extends IoTDBTableBaseDao
    * Time-bucketed aggregation read path matching ThingsBoard 4.3.1.1's {@code
    * AbstractChunkedAggregationTimeseriesDao.findAllAsync} contract (verified against tag v4.3.1.1).
    *
+   * <p>Dispatches on the query's {@link IntervalType}: a {@code null} or {@code MILLISECONDS}
+   * interval type is the fixed-width path ({@link #readMillisecondsAggregatedQuery}); the calendar
+   * interval types ({@code WEEK}/{@code WEEK_ISO}/{@code MONTH}/{@code QUARTER}) take the calendar
+   * path ({@link #readCalendarAggregatedQuery}). Both paths return the same per-bucket aggregate
+   * shape; they differ only in how bucket boundaries are computed.
+   */
+  private ReadTsKvQueryResult readAggregatedQuery(
+      TenantId tenantId, EntityId entityId, ReadTsKvQuery query) throws Exception {
+    if (isCalendarInterval(query)) {
+      return readCalendarAggregatedQuery(tenantId, entityId, query);
+    }
+    return readMillisecondsAggregatedQuery(tenantId, entityId, query);
+  }
+
+  private static boolean isCalendarInterval(ReadTsKvQuery query) {
+    AggregationParams params = query.getAggParameters();
+    if (params == null) {
+      return false;
+    }
+    IntervalType intervalType = params.getIntervalType();
+    // A null IntervalType defaults to MILLISECONDS semantics (the fixed-width aggregation path).
+    return intervalType != null && intervalType != IntervalType.MILLISECONDS;
+  }
+
+  /**
+   * Fixed-width {@code MILLISECONDS} aggregation read path.
+   *
    * <p>ThingsBoard walks {@code [startTs, endPeriod)} (where {@code endPeriod = max(startTs + 1,
    * endTs)}) in fixed-width {@code interval}-millisecond buckets <em>anchored at {@code
    * startTs}</em> (NOT epoch 1970), runs one aggregate per bucket, skips empty buckets, and stamps
@@ -341,32 +372,8 @@ public class IoTDBTableTimeseriesDao extends IoTDBTableBaseDao
    *
    * <p>The {@code startTs}-anchored buckets come from IoTDB 2.0.8 Table Mode's three-argument
    * {@code date_bin(<interval>ms, time, <startTs>)} primitive (origin = {@code startTs}); see
-   * {@link #buildAggregationSql}. This DAO currently handles only the fixed-width {@code
-   * MILLISECONDS} interval; calendar-interval aggregation is delivered in a later week.
+   * {@link #buildAggregationSql}.
    */
-  private ReadTsKvQueryResult readAggregatedQuery(
-      TenantId tenantId, EntityId entityId, ReadTsKvQuery query) throws Exception {
-    // Calendar intervals (WEEK/WEEK_ISO/MONTH/QUARTER) are not fixed-width and cannot be reproduced
-    // by IoTDB's millisecond date_bin; they are delivered in Wk 9. Reject them explicitly rather
-    // than silently mis-bucketing a calendar query as a fixed-millisecond window (a calendar
-    // AggregationParams still carries a positive numeric interval).
-    if (isCalendarInterval(query)) {
-      throw new UnsupportedOperationException(
-          "IoTDB Table Mode calendar-interval aggregation is not implemented yet (GSOC-304 Wk 9)");
-    }
-    return readMillisecondsAggregatedQuery(tenantId, entityId, query);
-  }
-
-  private static boolean isCalendarInterval(ReadTsKvQuery query) {
-    var params = query.getAggParameters();
-    if (params == null) {
-      return false;
-    }
-    IntervalType intervalType = params.getIntervalType();
-    // A null IntervalType defaults to MILLISECONDS semantics (the fixed-width aggregation path).
-    return intervalType != null && intervalType != IntervalType.MILLISECONDS;
-  }
-
   private ReadTsKvQueryResult readMillisecondsAggregatedQuery(
       TenantId tenantId, EntityId entityId, ReadTsKvQuery query) throws Exception {
     String key = requireTelemetryKey(query.getKey());
@@ -415,6 +422,107 @@ public class IoTDBTableTimeseriesDao extends IoTDBTableBaseDao
       }
     }
     return new ReadTsKvQueryResult(query.getId(), entries, lastEntryTs);
+  }
+
+  /**
+   * Calendar-interval (non-{@code MILLISECONDS}) aggregation read path matching ThingsBoard
+   * 4.3.1.1's {@code AbstractChunkedAggregationTimeseriesDao.findAllAsync} contract for {@code
+   * WEEK}/{@code WEEK_ISO}/{@code MONTH}/{@code QUARTER} buckets (verified against tag v4.3.1.1).
+   *
+   * <p>IoTDB 2.0.8's native {@code date_bin} calendar primitive cannot reproduce ThingsBoard's
+   * boundaries: it anchors each calendar bucket on the <em>origin's day-of-month</em> (so {@code
+   * date_bin(1mo, time, startTs)} from a mid-month {@code startTs} steps day-15 → day-15, not to
+   * the 1st of each month) and it exposes <em>no timezone argument</em> (it computes in the
+   * server's UTC zone only). ThingsBoard instead advances {@code startTs} to the start of the next
+   * calendar unit in {@code tzId} via {@link TimeUtils#calculateIntervalEnd}, so the first bucket
+   * is the partial {@code [startTs, nextCalendarBoundary)} and later buckets are full calendar
+   * units. This path therefore reproduces ThingsBoard exactly the way ThingsBoard itself does: it
+   * walks the calendar boundaries in Java and issues one bounded aggregate query per bucket
+   * (ThingsBoard issues one future per bucket), reusing the very same projection, row mapper and
+   * typed-COUNT logic as the {@code MILLISECONDS} path.
+   *
+   * <p>Walking {@code [startTs, endPeriod)} where {@code endPeriod = max(startTs + 1, endTs)}: each
+   * iteration takes {@code bucketStart = startPeriod}, {@code bucketEnd = min(calculateIntervalEnd(
+   * bucketStart, intervalType, tzId), endPeriod)}, stamps the emitted entry at the integer midpoint
+   * {@code bucketStart + (bucketEnd - bucketStart) / 2}, skips empty buckets, and advances {@code
+   * startPeriod = bucketEnd}. Query order and limit are ignored (aggregation always returns every
+   * non-empty bucket ascending). {@code lastEntryTs} is the maximum underlying data timestamp
+   * across all buckets, falling back to {@code startTs} when nothing matched.
+   */
+  private ReadTsKvQueryResult readCalendarAggregatedQuery(
+      TenantId tenantId, EntityId entityId, ReadTsKvQuery query) throws Exception {
+    String key = requireTelemetryKey(query.getKey());
+    Aggregation aggregation = aggregationOf(query);
+    IntervalType intervalType = query.getAggParameters().getIntervalType();
+    ZoneId tzId = calendarZone(query);
+    long startTs = query.getStartTs();
+    // ThingsBoard clamps endPeriod = max(startTs + 1, endTs) so a zero-width range still walks one
+    // bucket; the final calendar bucket is clamped to endPeriod just like the MILLISECONDS path.
+    long endPeriod = Math.max(startTs + 1, query.getEndTs());
+
+    List<TsKvEntry> entries = new ArrayList<>();
+    long lastEntryTs = startTs;
+    boolean hasEntry = false;
+    try (ITableSession session = tableSessionPool.getSession()) {
+      long startPeriod = startTs;
+      while (startPeriod < endPeriod) {
+        long bucketStart = startPeriod;
+        long bucketEnd =
+            Math.min(TimeUtils.calculateIntervalEnd(bucketStart, intervalType, tzId), endPeriod);
+        // Defensive: calculateIntervalEnd always advances, but guard against a degenerate boundary
+        // (e.g. a clamp that did not move) so the loop cannot spin forever.
+        if (bucketEnd <= bucketStart) {
+          bucketEnd = endPeriod;
+        }
+        long bucketTs = bucketStart + (bucketEnd - bucketStart) / 2;
+        String sql =
+            buildBucketAggregationSql(tenantId, entityId, key, aggregation, bucketStart, bucketEnd);
+        try (SessionDataSet dataSet = session.executeQueryStatement(sql)) {
+          SessionDataSet.DataIterator row = dataSet.iterator();
+          // Each calendar bucket is its own bounded aggregate query with no GROUP BY, so an EMPTY
+          // window still returns one row (COUNT=0, AVG/MIN/MAX/SUM=NULL, MAX(time)=NULL). The
+          // fixed-width GROUP BY path drops empty buckets implicitly; here we must skip them
+          // explicitly. MAX(time) is NULL iff the window matched zero rows (time is never null), so
+          // it is the robust empty-bucket test across every aggregation type, including COUNT
+          // (which
+          // would otherwise emit a spurious 0 and violate ThingsBoard's "skip empty buckets").
+          if (row.next() && !row.isNull(MAX_TS_COLUMN)) {
+            KvEntry value =
+                aggregatedEntry(
+                    aggregation,
+                    row,
+                    new SumReSumContext(session, tenantId, entityId, key, bucketStart, bucketEnd));
+            if (value != null) {
+              entries.add(new BasicTsKvEntry(bucketTs, value));
+              long maxDataTs = bucketMaxTs(row, bucketStart);
+              if (!hasEntry || maxDataTs > lastEntryTs) {
+                lastEntryTs = maxDataTs;
+                hasEntry = true;
+              }
+            }
+          }
+        }
+        startPeriod = bucketEnd;
+      }
+    }
+    return new ReadTsKvQueryResult(query.getId(), entries, lastEntryTs);
+  }
+
+  private static long bucketMaxTs(SessionDataSet.DataIterator row, long bucketStart)
+      throws Exception {
+    // A single-typed bucket with only NULL values would also null MAX(time); fall back to the
+    // bucket start so lastEntryTs never regresses below the walked range.
+    if (row.isNull(MAX_TS_COLUMN)) {
+      return bucketStart;
+    }
+    return row.getTimestamp(MAX_TS_COLUMN).getTime();
+  }
+
+  private static ZoneId calendarZone(ReadTsKvQuery query) {
+    ZoneId tzId = query.getAggParameters().getTzId();
+    // ThingsBoard always supplies a zone for calendar aggregation (AggregationParams.calendar
+    // resolves it); default to the system zone defensively so calculateIntervalEnd never NPEs.
+    return tzId != null ? tzId : ZoneId.systemDefault();
   }
 
   private String buildReadSql(
@@ -506,6 +614,34 @@ public class IoTDBTableTimeseriesDao extends IoTDBTableBaseDao
     // includes a point at startTs (matching AbstractChunkedAggregationTimeseriesDao).
     sql.append(" AND time < ").append(endExclusive);
     sql.append(" GROUP BY 1 ORDER BY 1 ASC");
+    return sql.toString();
+  }
+
+  /**
+   * Builds the single-bucket aggregate SQL for one calendar bucket {@code [bucketStart,
+   * bucketEnd)}. Unlike {@link #buildAggregationSql}, there is no {@code date_bin}/{@code GROUP
+   * BY}: ThingsBoard computes calendar bucket boundaries in Java (timezone-aware,
+   * calendar-start-aligned) and runs one bounded aggregate per bucket, so the half-open {@code time
+   * >= bucketStart AND time < bucketEnd} window <em>is</em> the bucket. The same aggregate
+   * projection, {@code MAX(time) AS max_ts} and typed-COUNT logic as the fixed-width path are
+   * reused; the caller derives the bucket midpoint timestamp and skips empty buckets in Java.
+   */
+  private String buildBucketAggregationSql(
+      TenantId tenantId,
+      EntityId entityId,
+      String key,
+      Aggregation aggregation,
+      long bucketStart,
+      long bucketEnd) {
+    StringBuilder sql = new StringBuilder("SELECT ").append(aggregationProjection(aggregation));
+    sql.append(", MAX(time) AS ").append(MAX_TS_COLUMN);
+    sql.append(" FROM ").append(TABLE_NAME);
+    sql.append(" WHERE tenant_id=").append(sqlString(tenantId.getId().toString()));
+    sql.append(" AND entity_type=").append(sqlString(entityId.getEntityType().name()));
+    sql.append(" AND entity_id=").append(sqlString(entityId.getId().toString()));
+    sql.append(" AND key=").append(sqlString(key));
+    sql.append(" AND time >= ").append(bucketStart);
+    sql.append(" AND time < ").append(bucketEnd);
     return sql.toString();
   }
 
