@@ -70,6 +70,47 @@ class IoTDBTableContextStartupTest {
             });
   }
 
+  // PR-1 implements only the timeseries backend, so the latest-telemetry selector must NOT spin up
+  // a session pool or run the schema-bootstrap DDL: those land when the latest DAO ships.
+  @Test
+  void tsLatestSelectorAlone_doesNotActivatePoolOrBootstrap() {
+    contextRunner
+        .withPropertyValues(
+            "database.ts_latest.type=iotdb-table",
+            "iotdb.host=localhost",
+            "iotdb.port=6667",
+            "iotdb.username=root",
+            "iotdb.password=root",
+            "iotdb.session-pool-size=8",
+            "iotdb.connection-timeout-ms=5000")
+        .run(
+            context -> {
+              assertFalse(context.containsBean("tableSessionPool"));
+              assertFalse(context.containsBeanDefinition("schemaBootstrap"));
+              assertFalse(context.containsBeanDefinition("ioTDBTableTimeseriesDao"));
+            });
+  }
+
+  // Likewise the label selector must NOT activate the pool or schema bootstrap in PR-1.
+  @Test
+  void labelsSelectorAlone_doesNotActivatePoolOrBootstrap() {
+    contextRunner
+        .withPropertyValues(
+            "iotdb.labels.enabled=true",
+            "iotdb.host=localhost",
+            "iotdb.port=6667",
+            "iotdb.username=root",
+            "iotdb.password=root",
+            "iotdb.session-pool-size=8",
+            "iotdb.connection-timeout-ms=5000")
+        .run(
+            context -> {
+              assertFalse(context.containsBean("tableSessionPool"));
+              assertFalse(context.containsBeanDefinition("schemaBootstrap"));
+              assertFalse(context.containsBeanDefinition("ioTDBTableTimeseriesDao"));
+            });
+  }
+
   @Test
   void uppercaseSelector_stillActivatesPoolAndDao() {
     contextRunner

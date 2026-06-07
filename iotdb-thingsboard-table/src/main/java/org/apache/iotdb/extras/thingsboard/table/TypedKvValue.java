@@ -23,7 +23,6 @@ import java.util.Objects;
 /**
  * A single typed value mapped from one IoTDB Table Mode telemetry row's 5 typed FIELD columns
  * (bool_v, long_v, double_v, str_v, json_v). Exactly one field is non-null per valid row.
- * ThingsBoard-type bridging is deferred to Wk 2.
  */
 public record TypedKvValue(
     Boolean booleanValue,

@@ -30,11 +30,11 @@ import lombok.extern.slf4j.Slf4j;
  * would expose a {@code database.ts_latest.type=iotdb-table} selector that ThingsBoard cannot bind
  * to a working DAO.
  *
- * <p>Strategy F keeps this class free of ThingsBoard imports and interface clauses until the DAO
- * dependency path is decided.
+ * <p>Strategy F keeps this class free of ThingsBoard imports and interface clauses until the
+ * latest-telemetry path is implemented.
  *
  * @see "GSOC-304 design doc section 6.0"
- * @since GSOC-304 Wk 1 scaffold
+ * @since GSOC-304
  */
 @Slf4j
 public class IoTDBTableLatestDao extends IoTDBTableBaseDao {
@@ -45,6 +45,7 @@ public class IoTDBTableLatestDao extends IoTDBTableBaseDao {
     super(tableSessionPool);
   }
 
-  // TODO(Strategy F): add TimeseriesLatestDao binding after dependency resolution is decided.
-  // TODO(GSOC-304 Wk 4): add latest telemetry method bodies, then re-add the activation property.
+  // TODO(Strategy F): add TimeseriesLatestDao binding once the latest-telemetry path is
+  // implemented.
+  // TODO(GSOC-304): add latest telemetry method bodies, then re-add the activation property.
 }

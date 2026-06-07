@@ -28,21 +28,22 @@ import lombok.extern.slf4j.Slf4j;
  * <p>Spring activation: TBD by Q6; no conditional property is declared in this scaffold because
  * ThingsBoard does not yet expose an AttributesDao selector.
  *
- * <p>Strategy F keeps this class free of ThingsBoard imports and interface clauses until the DAO
- * dependency path is decided.
+ * <p>Strategy F keeps this class free of ThingsBoard imports and interface clauses until the
+ * attribute path is implemented.
  *
  * @see "GSOC-304 design doc section 6.0"
- * @since GSOC-304 Wk 1 scaffold
+ * @since GSOC-304
  */
 @Slf4j
 public class IoTDBTableAttributesDao extends IoTDBTableBaseDao {
-  // Not annotated @Repository yet — Q6 activation property is TBD; Wk 5 will add the appropriate
-  // @ConditionalOnProperty once Q6 resolves (see TB Discussion #15296).
+  // Not annotated @Repository yet — the activation property is TBD; a later PR will add the
+  // appropriate @ConditionalOnProperty once the AttributesDao selector is resolved (see TB
+  // Discussion #15296).
   public IoTDBTableAttributesDao(ITableSessionPool tableSessionPool) {
     super(tableSessionPool);
   }
 
-  // TODO(Q6): activation property waits for ThingsBoard maintainer decision.
-  // TODO(Strategy F): add AttributesDao binding after dependency resolution is decided.
-  // TODO(GSOC-304 Wk 5): add attribute method bodies after Q6 is resolved.
+  // TODO: activation property waits for the ThingsBoard maintainer decision (TB Discussion #15296).
+  // TODO(Strategy F): add AttributesDao binding once the attribute path is implemented.
+  // TODO(GSOC-304): add attribute method bodies once the AttributesDao selector is resolved.
 }

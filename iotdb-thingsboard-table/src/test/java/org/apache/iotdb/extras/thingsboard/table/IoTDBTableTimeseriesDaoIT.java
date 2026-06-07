@@ -48,17 +48,18 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * GSOC-304 Wk 3 integration tests for the IoTDB Table Mode timeseries DAO against a real IoTDB
- * 2.0.8 container: the Wk 2 WRITE path (verified by reading the telemetry table back through raw
- * table-session SQL) plus the Wk 3 RAW (non-aggregated) READ path and the DELETE path exercised
- * through the DAO. The time-bucketed aggregation read path is introduced in Wk 8 and is not
- * exercised here.
+ * Integration tests for the IoTDB Table Mode timeseries DAO against a real IoTDB 2.0.8 container:
+ * the WRITE path (verified by reading the telemetry table back through raw table-session SQL) plus
+ * the RAW (non-aggregated) READ path and the DELETE path exercised through the DAO. The
+ * time-bucketed aggregation read path is introduced in a later PR and is not exercised here.
  */
 @Tag("integration")
 @Testcontainers(disabledWithoutDocker = true)
@@ -324,6 +325,72 @@ class IoTDBTableTimeseriesDaoIT {
 
         assertTimestamps(results.get(0), 7002L);
         assertTimestamps(results.get(1), 7001L);
+      } finally {
+        dao.destroy();
+        writer.destroy();
+      }
+    }
+  }
+
+  /**
+   * Pins the documented Phase-1 limitation (module README "Known limitations"): a save of the same
+   * (tenant, entity, key, timestamp) with a different value type in a <em>separate</em> flush can
+   * leave two typed columns on that one row, and a raw read of that point then fails fast with the
+   * single-typed-column invariant exception ({@link IllegalStateException} from {@link
+   * IoTDBTableBaseDao#getEntry}) rather than returning wrong data. {@code batchSize = 1} forces
+   * each save into its own flush so the LONG and the same-timestamp STRING are written by two
+   * distinct tablets. This is intentionally NOT fixed in PR-1 (the delete-then-insert overwrite is
+   * deferred); this test documents and locks the honest fail-fast behavior.
+   */
+  @Test
+  void sameTimestampTypeChangeAcrossFlushes_readFailsFast() throws Exception {
+    TestScope scope =
+        scope(
+            "type_change",
+            "33333333-3333-3333-3333-333333333309",
+            "44444444-4444-4444-4444-444444444409");
+    bootstrapSchema(scope.database());
+    try (ITableSessionPool pool = newPool(scope.database())) {
+      // batchSize = 1 => every save flushes on its own, so the two writes land in two separate
+      // flushes/tablets at the same (tenant, entity, key, timestamp).
+      IoTDBTableConfig config = config(1);
+      IoTDBTableTimeseriesWriter writer = new IoTDBTableTimeseriesWriter(pool, config);
+      IoTDBTableTimeseriesDao dao = new IoTDBTableTimeseriesDao(pool, writer, config);
+      try {
+        long ts = 9000L;
+        String key = "type_change";
+
+        // Flush 1: LONG at ts.
+        assertEquals(
+            1,
+            dao.save(scope.tenantId(), scope.entityId(), entry(ts, key, DataType.LONG, 7L), 0)
+                .get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+        // Flush 2: STRING at the SAME ts. Lands in long_v vs str_v on the same row.
+        assertEquals(
+            1,
+            dao.save(scope.tenantId(), scope.entityId(), entry(ts, key, DataType.STRING, "x"), 0)
+                .get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+
+        // Confirm the row now actually carries two typed columns (the poisoned state).
+        assertTelemetryRows(pool, scope, key, 1, 2);
+
+        // A raw read of that point must fail fast with the single-typed-column invariant, not
+        // return a value.
+        ReadTsKvQuery query = new BaseReadTsKvQuery(key, ts - 10L, ts + 10L, 10, "ASC");
+        ExecutionException failure =
+            assertThrows(
+                ExecutionException.class,
+                () ->
+                    dao.findAllAsync(scope.tenantId(), scope.entityId(), List.of(query))
+                        .get(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+        Throwable cause = failure.getCause();
+        assertTrue(
+            cause instanceof IllegalStateException,
+            "raw read of a poisoned point must fail with IllegalStateException, was: " + cause);
+        assertTrue(
+            cause.getMessage() != null && cause.getMessage().contains("typed value columns set"),
+            "fail-fast message should name the single-typed-column invariant: "
+                + cause.getMessage());
       } finally {
         dao.destroy();
         writer.destroy();

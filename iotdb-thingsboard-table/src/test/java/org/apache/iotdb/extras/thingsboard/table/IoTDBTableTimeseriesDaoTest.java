@@ -74,11 +74,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * GSOC-304 Wk 3 unit tests for the IoTDB Table Mode timeseries DAO: the Wk 2 WRITE path (multi-row
- * Tablet mapping, batch flushing, connection retry, back-pressure rejection and graceful-shutdown
- * drain) plus the Wk 3 RAW (non-aggregated) READ path, the DELETE path and the bounded read
- * thread-pool. The time-bucketed aggregation read path is introduced in Wk 8 and is not exercised
- * here.
+ * Unit tests for the IoTDB Table Mode timeseries DAO: the WRITE path (multi-row Tablet mapping,
+ * batch flushing, connection retry, back-pressure rejection and graceful-shutdown drain) plus the
+ * RAW (non-aggregated) READ path, the DELETE path and the bounded read thread-pool. The
+ * time-bucketed aggregation read path is introduced in a later PR and is not exercised here.
  */
 class IoTDBTableTimeseriesDaoTest {
   private static final TenantId TENANT_ID =

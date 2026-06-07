@@ -167,12 +167,14 @@
                         <id>default-compile</id>
                         <configuration>
                             <!--
-                                Fallback compile-only ThingsBoard surface.
-                                The real org.thingsboard.common:data:${thingsboard.version} artifact could not be
-                                installed in the network-restricted local Maven repo during this pass. These sources
-                                are available only to javac and are excluded from the built jar below; replace this
-                                source root with a provided-scope org.thingsboard.common:data dependency once the
-                                upstream artifact is resolvable.
+                                Compile-only ThingsBoard surface (Strategy F).
+                                ThingsBoard's dao/common artifacts are not published to Maven Central, so the
+                                compile-only surface under src/provided supplies them at build time; these sources
+                                are available only to javac and are excluded from the built jar below (see the
+                                maven-jar-plugin org/thingsboard/** exclude). The real ThingsBoard classpath
+                                provides the genuine types at runtime. Replace this source root with a
+                                provided-scope org.thingsboard.common:data dependency if those artifacts become
+                                resolvable from a configured repository.
                             -->
                             <compileSourceRoots>
                                 <compileSourceRoot>${project.basedir}/src/main/java</compileSourceRoot>

@@ -30,11 +30,11 @@ import lombok.extern.slf4j.Slf4j;
  * expose an {@code iotdb.labels.enabled=true} selector that ThingsBoard cannot bind to a working
  * DAO.
  *
- * <p>Strategy F keeps this class free of ThingsBoard imports and interface clauses until the DAO
- * dependency path is decided.
+ * <p>Strategy F keeps this class free of ThingsBoard imports and interface clauses until the
+ * optional label path is implemented.
  *
  * @see "GSOC-304 design doc sections 5 and 6.0"
- * @since GSOC-304 Wk 1 scaffold
+ * @since GSOC-304
  */
 @Slf4j
 public class IoTDBTableLabelDao extends IoTDBTableBaseDao {
@@ -45,7 +45,7 @@ public class IoTDBTableLabelDao extends IoTDBTableBaseDao {
     super(tableSessionPool);
   }
 
-  // TODO(Strategy F): add label DAO binding after dependency resolution is decided.
-  // TODO(GSOC-304 Phase 2): add optional label method bodies only if label mirroring ships, then
-  // re-add the activation property.
+  // TODO(Strategy F): add label DAO binding once the optional label path is implemented.
+  // TODO(GSOC-304): add optional label method bodies only if label mirroring ships, then re-add the
+  // activation property.
 }

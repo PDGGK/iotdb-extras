@@ -133,6 +133,37 @@ class IoTDBTableConfigTest {
     assertTrue(violationPaths.contains("ts.save.shutdownDrainTimeoutMs"));
   }
 
+  @Test
+  void validation_rejectsMalformedDatabaseName() {
+    // The database name is spliced into CREATE DATABASE / USE DDL, so a name with a semicolon, a
+    // space or a leading digit must be rejected by the @Pattern (IoTDB identifier) constraint.
+    for (String bad : new String[] {"tb;drop", "tb db", "1tb", "tb-1", ""}) {
+      IoTDBTableConfig config = new IoTDBTableConfig();
+      config.setDatabase(bad);
+      Set<String> violationPaths =
+          validate(config).stream()
+              .map(v -> v.getPropertyPath().toString())
+              .collect(Collectors.toSet());
+      assertTrue(
+          violationPaths.contains("database"),
+          "database name '" + bad + "' must be rejected by validation");
+    }
+  }
+
+  @Test
+  void validation_acceptsValidDatabaseName() {
+    for (String good : new String[] {"thingsboard", "tb_custom", "_tb", "TB1", "tenant_a"}) {
+      IoTDBTableConfig config = new IoTDBTableConfig();
+      config.setDatabase(good);
+      Set<String> violationPaths =
+          validate(config).stream()
+              .map(v -> v.getPropertyPath().toString())
+              .collect(Collectors.toSet());
+      assertFalse(
+          violationPaths.contains("database"), "database name '" + good + "' must pass validation");
+    }
+  }
+
   private Set<ConstraintViolation<IoTDBTableConfig>> validate(IoTDBTableConfig config) {
     try (ValidatorFactory factory =
         Validation.byDefaultProvider()

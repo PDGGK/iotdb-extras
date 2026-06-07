@@ -22,6 +22,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
@@ -45,7 +46,18 @@ public class IoTDBTableConfig {
   @Max(1024)
   private int sessionPoolSize = 8;
 
-  @NotBlank private String database = "thingsboard";
+  /**
+   * Target IoTDB database. The bootstrap splices this name verbatim into {@code CREATE DATABASE} /
+   * {@code USE} DDL, so it is constrained to the IoTDB identifier rule (letter or underscore first,
+   * then letters, digits or underscores) to reject names that could break or inject into that DDL.
+   */
+  @NotBlank
+  @Pattern(
+      regexp = "^[A-Za-z_][A-Za-z0-9_]*$",
+      message =
+          "must be a valid IoTDB identifier: a letter or underscore followed by letters, digits or"
+              + " underscores")
+  private String database = "thingsboard";
 
   /**
    * Affects ThingsBoard storage data-point accounting only; it does not configure IoTDB physical

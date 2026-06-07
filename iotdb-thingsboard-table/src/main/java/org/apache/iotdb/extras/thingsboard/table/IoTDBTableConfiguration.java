@@ -46,19 +46,24 @@ import java.util.List;
  * methods are used in preference to {@code @ComponentScan}, which Spring deliberately filters out
  * of auto-configuration classes (it would otherwise re-scan the host application's packages). Each
  * bean keeps its own activation conditional so the context stays inert unless {@code
- * database.ts.type=iotdb-table} (or a sibling selector) is set.
+ * database.ts.type=iotdb-table} is set. This PR delivers only the timeseries backend, so the pool,
+ * schema bootstrap, writer and DAO all activate on {@code database.ts.type=iotdb-table} alone; the
+ * latest-telemetry and label selectors return when those DAOs land in later PRs.
  */
 @Slf4j
 @AutoConfiguration
 @EnableConfigurationProperties(IoTDBTableConfig.class)
 public class IoTDBTableConfiguration {
 
+  // PR-1 implements only the timeseries backend, so the pool is gated on the timeseries selector
+  // alone. The latest-telemetry (database.ts_latest.type) and label (iotdb.labels.enabled)
+  // selectors
+  // are intentionally NOT included here: those DAOs do not exist yet, so they must not spin up a
+  // session pool (and the schema bootstrap below) for a backend that has not shipped. Those
+  // conditions return when the corresponding DAOs land in later PRs.
   @Bean(destroyMethod = "close")
   @ConditionalOnMissingBean(ITableSessionPool.class)
-  @ConditionalOnExpression(
-      "'${database.ts.type:}'.equalsIgnoreCase('iotdb-table') "
-          + "or '${database.ts_latest.type:}'.equalsIgnoreCase('iotdb-table') "
-          + "or '${iotdb.labels.enabled:false}'.equalsIgnoreCase('true')")
+  @ConditionalOnExpression("'${database.ts.type:}'.equalsIgnoreCase('iotdb-table')")
   public ITableSessionPool tableSessionPool(IoTDBTableConfig config) {
     String nodeUrl = config.getHost() + ":" + config.getPort();
     ITableSessionPool pool =
@@ -93,14 +98,16 @@ public class IoTDBTableConfiguration {
    * documentation and for component-scan-based deployments, but auto-configuration registers it
    * explicitly here (auto-config classes do not honor {@code @ComponentScan}). The bean name {@code
    * ioTDBTableTimeseriesDao} matches the default component-scan name, and
-   * {@code @ConditionalOnMissingBean} makes this registration back off if a host has already
-   * component-scanned the DAO, so the two paths never collide with a duplicate-bean error. The
-   * remaining conditionals mirror the ones on {@link IoTDBTableTimeseriesDao} so activation stays
-   * gated on the pool bean and {@code database.ts.type=iotdb-table}.
+   * {@code @ConditionalOnMissingBean(TimeseriesDao.class)} makes this registration back off
+   * whenever the host already provides <em>any</em> {@code TimeseriesDao} implementation (whether
+   * component-scanned from this module or supplied by ThingsBoard itself), so the two SPI beans
+   * never collide with a duplicate-bean error. The remaining conditionals mirror the ones on {@link
+   * IoTDBTableTimeseriesDao} so activation stays gated on the pool bean and {@code
+   * database.ts.type=iotdb-table}.
    */
   @Bean
   @ConditionalOnBean(ITableSessionPool.class)
-  @ConditionalOnMissingBean(IoTDBTableTimeseriesDao.class)
+  @ConditionalOnMissingBean(org.thingsboard.server.dao.timeseries.TimeseriesDao.class)
   @ConditionalOnProperty(name = "database.ts.type", havingValue = "iotdb-table")
   public IoTDBTableTimeseriesDao ioTDBTableTimeseriesDao(
       ITableSessionPool tableSessionPool,
@@ -120,10 +127,7 @@ public class IoTDBTableConfiguration {
    */
   @Bean
   @ConditionalOnBean(ITableSessionPool.class)
-  @ConditionalOnExpression(
-      "'${database.ts.type:}'.equalsIgnoreCase('iotdb-table') "
-          + "or '${database.ts_latest.type:}'.equalsIgnoreCase('iotdb-table') "
-          + "or '${iotdb.labels.enabled:false}'.equalsIgnoreCase('true')")
+  @ConditionalOnExpression("'${database.ts.type:}'.equalsIgnoreCase('iotdb-table')")
   @ConditionalOnProperty(
       name = "iotdb.schema.bootstrap",
       havingValue = "true",

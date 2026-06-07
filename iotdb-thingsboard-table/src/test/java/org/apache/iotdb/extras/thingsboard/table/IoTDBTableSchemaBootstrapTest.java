@@ -33,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -125,5 +126,27 @@ class IoTDBTableSchemaBootstrapTest {
     assertThrows(
         StatementExecutionException.class,
         () -> new IoTDBTableSchemaBootstrap(pool, config).afterPropertiesSet());
+  }
+
+  @Test
+  void rejectsMalformedDatabaseNameBeforeOpeningSession() throws Exception {
+    // Defense-in-depth: even constructed directly (bypassing @Pattern bean validation), the
+    // bootstrap must reject a database name that is not a valid IoTDB identifier before it splices
+    // the name into CREATE DATABASE / USE DDL, and must not open a session.
+    ITableSessionPool pool = mock(ITableSessionPool.class);
+
+    for (String bad : new String[] {"tb;drop", "tb db", "1tb"}) {
+      IoTDBTableConfig config = new IoTDBTableConfig();
+      config.setDatabase(bad);
+      IllegalStateException ex =
+          assertThrows(
+              IllegalStateException.class,
+              () -> new IoTDBTableSchemaBootstrap(pool, config).afterPropertiesSet());
+      assertTrue(
+          ex.getMessage().contains(bad),
+          "rejection message should name the offending database: " + ex.getMessage());
+    }
+    // No session was ever requested for any of the rejected names.
+    verify(pool, never()).getSession();
   }
 }

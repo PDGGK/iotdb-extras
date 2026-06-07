@@ -24,12 +24,14 @@
 ## Overview
 
 `iotdb-thingsboard-table` is a ThingsBoard historical-telemetry DAO backend
-built on Apache IoTDB 2.0.8 Table Mode (GSOC-304: enhancing the ThingsBoard
-integration with IoTDB 2.x Table Mode). It lets a ThingsBoard deployment store
+built on Apache IoTDB 2.0.8 Table Mode. It lets a ThingsBoard deployment store
 and serve time-series telemetry through IoTDB's table-session API instead of the
-default Cassandra/SQL backends. The module targets ThingsBoard v4.3.1.1. It is
-wired into the `iotdb-extras` parent reactor `<modules>`, so it builds and tests
-as part of the root project. The canonical design document is published on Drive:
+default Cassandra/SQL backends. The module targets ThingsBoard v4.3.1.1. Because
+it compiles with Java 17 language features (records and others), the
+`iotdb-extras` parent reactor builds and tests it only on JDK 17+: the root pom
+adds it to `<modules>` through a profile activated by `<jdk>[17,)</jdk>`, so the
+JDK 8/11 reactor jobs skip it while the 17/21 jobs build it as part of the root
+project. The canonical design document is published on Drive:
 https://drive.google.com/file/d/1jXMCwF_HVvCR5lHDIT_1pv1DiIZt8j5O/view?usp=sharing
 
 ## ThingsBoard SPI surface (Strategy F)
@@ -44,6 +46,15 @@ runtime the actual ThingsBoard classpath supplies them. This keeps the module
 buildable in isolation while binding to the genuine ThingsBoard types on a real
 deployment.
 
+The compile-only surface under `src/provided/java` was manually verified against
+ThingsBoard `v4.3.1.1` (commit `c2a52e46`): the `TimeseriesDao` SPI methods the
+DAO consumes and the value-object accessors it reads were checked against the
+upstream sources. A fully-automated check against the upstream artifact is not
+possible because ThingsBoard's `dao`/`common-data` modules are not published to
+Maven Central (the reason for Strategy F). As a guard against silent drift,
+`StrategyFContractTest` pins the exact `TimeseriesDao` SPI method signatures the
+DAO depends on, so any accidental edit to the local surface fails the build.
+
 ## Scope (staged PR series)
 
 This is **PR-1 of a staged series** (design doc section 6.3). It delivers the
@@ -57,8 +68,27 @@ implemented in later PRs.
 > IoTDB Table Mode for **raw read + write + delete only**. **Time-bucketed
 > aggregation is NOT implemented yet** — an aggregation query (positive interval)
 > throws `UnsupportedOperationException`; it lands in a follow-up PR (design doc
-> section 6.3, Wk 8). Operators should expect raw historical reads, writes, and
-> deletes to work and aggregation dashboards to fail until that follow-up ships.
+> section 6.3). Operators should expect raw historical reads, writes, and deletes
+> to work and aggregation dashboards to fail until that follow-up ships.
+
+## Known limitations (Phase 1)
+
+**Same-timestamp type change across separate flushes.** The writer collapses
+duplicate `(tenant, entity, key, timestamp)` saves *within a single flush* so the
+last write wins, but it does not yet defend against a same-`(tenant, entity, key,
+timestamp)` save whose value *type* changes between two **separate** flushes (for
+example a `LONG` written in one flush and a `STRING` written at the same
+timestamp in a later flush). Because each typed value lands in its own column
+(`long_v`, `str_v`, ...), that single point can end up with two non-null typed
+columns.
+
+This is a deliberate Phase-1 scope decision: the cleanup that would prevent it (a
+delete-then-insert overwrite on every save) is planned for a later iteration. The
+behavior is **fail-fast, not silent**: a raw read of that one poisoned point
+throws an `IllegalStateException` (the single-typed-column invariant enforced in
+`IoTDBTableBaseDao`) rather than returning a wrong value. Every other point is
+unaffected. This documented behavior is pinned by an integration test
+(`IoTDBTableTimeseriesDaoIT`).
 
 ## Configuration
 

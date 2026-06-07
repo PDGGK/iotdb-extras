@@ -71,13 +71,13 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <p>Strategy F consumes ThingsBoard common-data types from the compile classpath and binds the
  * real historical {@link TimeseriesDao} SPI.
  *
- * <p>GSOC-304 Wk 3 delivers the batch WRITE path ({@link #save}), the RAW (non-aggregated)
- * historical READ path ({@link #findAllAsync}) and the DELETE path ({@link #remove}), both driven
- * through a bounded read thread-pool. The time-bucketed aggregation read path is deferred to Wk 8;
- * a positive-interval aggregation query still throws {@link UnsupportedOperationException}.
+ * <p>PR-1 delivers the batch WRITE path ({@link #save}), the RAW (non-aggregated) historical READ
+ * path ({@link #findAllAsync}) and the DELETE path ({@link #remove}), all driven through a bounded
+ * read thread-pool. The time-bucketed aggregation read path is deferred to a later PR; a
+ * positive-interval aggregation query still throws {@link UnsupportedOperationException}.
  *
  * @see "GSOC-304 design doc section 6.2"
- * @since GSOC-304 Wk 1 scaffold
+ * @since GSOC-304
  */
 @Slf4j
 @Repository
@@ -263,12 +263,12 @@ public class IoTDBTableTimeseriesDao extends IoTDBTableBaseDao
     if (aggregationOf(query) == Aggregation.NONE || query.getInterval() < 1L) {
       return readRawQuery(tenantId, entityId, query);
     }
-    // GSOC-304 Wk 3: the positive-interval, time-bucketed aggregation read path is delivered in
-    // Wk 8; only the RAW (Aggregation.NONE or interval < 1) branch is implemented now.
+    // The positive-interval, time-bucketed aggregation read path is delivered in a later PR; only
+    // the RAW (Aggregation.NONE or interval < 1) branch is implemented now.
     throw new UnsupportedOperationException(
         "Time-bucketed aggregation is not supported by this incremental IoTDB Table Mode backend"
             + " yet; raw read, write and delete are available -- aggregation lands in a follow-up"
-            + " PR (GSOC-304 Wk 8).");
+            + " PR.");
   }
 
   private ReadTsKvQueryResult readRawQuery(

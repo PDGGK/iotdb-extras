@@ -329,8 +329,11 @@ public class IoTDBTableTimeseriesWriter implements DisposableBean {
   }
 
   private List<IoTDBTablePendingSave> deduplicateForInsert(List<IoTDBTablePendingSave> rawBatch) {
-    // TODO(GSOC-304 §3.4): Phase-1 relaxation mentor-approved (2026-06-01);
-    // defer cross-batch same-ts type-change delete-then-insert defense.
+    // Collapses duplicate (tenant, entity, key, time) saves within a single flush so the tablet
+    // honors the design's same-(tags, time) overwrite contract: the last write wins. Cross-flush
+    // same-time type changes are out of scope for this iteration -- a delete-then-insert defense
+    // is deferred (see the module README "Known limitations"). The read path fails fast on a row
+    // that ends up with two typed columns, so this relaxation never silently returns wrong data.
     Map<IoTDBTableSaveIdentity, IoTDBTablePendingSave> lastByIdentity =
         new LinkedHashMap<>(rawBatch.size());
     for (IoTDBTablePendingSave pending : rawBatch) {

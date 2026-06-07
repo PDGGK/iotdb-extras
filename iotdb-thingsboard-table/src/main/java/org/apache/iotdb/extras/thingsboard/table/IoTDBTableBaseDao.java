@@ -28,14 +28,13 @@ import lombok.extern.slf4j.Slf4j;
  * Base class for IoTDB Table Mode DAOs; not a Spring bean itself. Concrete DAOs declare
  * {@code @Repository} and the activation conditional. Holds the shared {@code ITableSessionPool}
  * (wired via constructor injection) and provides type-mapping helpers used by concrete DAOs
- * (TimeseriesDao, LatestDao, AttributesDao, LabelDao). ThingsBoard interface bridging is deferred
- * to Wk 2 once TB JAR resolution path is decided.
+ * (TimeseriesDao, LatestDao, AttributesDao, LabelDao).
  *
- * <p>Strategy F keeps this class free of ThingsBoard imports and interface clauses until the DAO
- * dependency path is decided.
+ * <p>Strategy F keeps this class free of ThingsBoard imports and interface clauses; concrete DAOs
+ * bind to the ThingsBoard SPI types directly.
  *
  * @see "GSOC-304 design doc section 6.0"
- * @since GSOC-304 Wk 1 scaffold
+ * @since GSOC-304
  */
 @Slf4j
 public class IoTDBTableBaseDao {

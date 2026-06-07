@@ -21,10 +21,12 @@
 
 # CI Notes
 
-The module is wired into the `iotdb-extras` parent reactor `<modules>`, so the
-root build already compiles and tests it. This file is a developer reference of
-the local checks for the `iotdb-thingsboard-table` module; it is not itself a
-GitHub Actions workflow.
+The `iotdb-extras` parent reactor builds and tests this module only on JDK 17+:
+the root pom adds it to `<modules>` through a profile activated by
+`<jdk>[17,)</jdk>` (it compiles with Java 17 language features), so the root
+build compiles and tests it on the 17/21 jobs and skips it on the 8/11 jobs. This
+file is a developer reference of the local checks for the `iotdb-thingsboard-table`
+module; it is not itself a GitHub Actions workflow.
 
 ## Candidate Checks
 

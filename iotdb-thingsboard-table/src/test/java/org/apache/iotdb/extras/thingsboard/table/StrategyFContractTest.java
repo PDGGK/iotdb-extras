@@ -39,6 +39,7 @@ import java.util.List;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -56,8 +57,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       {@code org/apache/commons/**}); the module pom must also declare the jar exclude so the
  *       guard holds even during the unit ({@code test}) phase before the jar exists.
  *   <li><b>SPI drift:</b> the {@link TimeseriesDao} SPI methods the DAO depends on still exist with
- *       the expected signatures, so a silent change to the provided surface fails fast.
+ *       the exact parameter and return types this module consumes, so a silent change to the
+ *       provided surface fails the build.
  * </ol>
+ *
+ * <p>The compile-only surface under {@code src/provided/java} was manually verified against
+ * ThingsBoard {@code v4.3.1.1} (commit {@code c2a52e46}). A fully-automated check against the
+ * upstream artifact is not possible because ThingsBoard's {@code dao}/{@code common-data} modules
+ * are not published to Maven Central (the reason for Strategy F), so {@code
+ * timeseriesDaoSpiMethodsMatchExpectedSignatures} below pins the exact SPI signatures as explicit
+ * expectations to catch any accidental drift in the local surface.
  */
 class StrategyFContractTest {
 
@@ -99,33 +108,51 @@ class StrategyFContractTest {
   @Test
   void timeseriesDaoSpiMethodsMatchExpectedSignatures() throws NoSuchMethodException {
     // The DAO implements TimeseriesDao; if the provided SPI surface drifts, these reflective
-    // lookups
-    // throw NoSuchMethodException and fail the build. Each lookup mirrors a method the DAO
-    // overrides.
-    Method findAllAsync =
-        TimeseriesDao.class.getMethod("findAllAsync", TenantId.class, EntityId.class, List.class);
-    assertEquals(ListenableFuture.class, findAllAsync.getReturnType());
-
-    Method save =
-        TimeseriesDao.class.getMethod(
-            "save", TenantId.class, EntityId.class, TsKvEntry.class, long.class);
-    assertEquals(ListenableFuture.class, save.getReturnType());
-
-    Method savePartition =
-        TimeseriesDao.class.getMethod(
-            "savePartition", TenantId.class, EntityId.class, long.class, String.class);
-    assertEquals(ListenableFuture.class, savePartition.getReturnType());
-
-    Method remove =
-        TimeseriesDao.class.getMethod(
-            "remove", TenantId.class, EntityId.class, DeleteTsKvQuery.class);
-    assertEquals(ListenableFuture.class, remove.getReturnType());
-
-    Method cleanup = TimeseriesDao.class.getMethod("cleanup", long.class);
-    assertEquals(void.class, cleanup.getReturnType());
+    // lookups throw NoSuchMethodException and fail the build. Each lookup pins the exact parameter
+    // and return types this module consumes from the ThingsBoard SPI as an explicit expectation,
+    // so an accidental edit to the local compile-only surface (src/provided) breaks the build.
+    // Verified against ThingsBoard v4.3.1.1 (commit c2a52e46).
+    assertSpiMethod(
+        "findAllAsync",
+        ListenableFuture.class,
+        new Class<?>[] {TenantId.class, EntityId.class, List.class});
+    assertSpiMethod(
+        "save",
+        ListenableFuture.class,
+        new Class<?>[] {TenantId.class, EntityId.class, TsKvEntry.class, long.class});
+    assertSpiMethod(
+        "savePartition",
+        ListenableFuture.class,
+        new Class<?>[] {TenantId.class, EntityId.class, long.class, String.class});
+    assertSpiMethod(
+        "remove",
+        ListenableFuture.class,
+        new Class<?>[] {TenantId.class, EntityId.class, DeleteTsKvQuery.class});
+    assertSpiMethod("cleanup", void.class, new Class<?>[] {long.class});
 
     // The DAO is a genuine TimeseriesDao implementation.
     assertTrue(TimeseriesDao.class.isAssignableFrom(IoTDBTableTimeseriesDao.class));
+  }
+
+  /**
+   * Asserts that {@link TimeseriesDao} declares a method with exactly the given name, return type
+   * and ordered parameter types. {@code getMethod} already throws {@link NoSuchMethodException} if
+   * no method matches the exact parameter types; the extra assertions on the return type and the
+   * resolved parameter-type array make the pinned expectation explicit (and the failure message
+   * actionable) when the surface drifts.
+   */
+  private static void assertSpiMethod(
+      String name, Class<?> expectedReturn, Class<?>[] expectedParams)
+      throws NoSuchMethodException {
+    Method method = TimeseriesDao.class.getMethod(name, expectedParams);
+    assertEquals(
+        expectedReturn,
+        method.getReturnType(),
+        "TimeseriesDao." + name + " return type drifted from the pinned SPI expectation");
+    assertArrayEquals(
+        expectedParams,
+        method.getParameterTypes(),
+        "TimeseriesDao." + name + " parameter types drifted from the pinned SPI expectation");
   }
 
   @Test

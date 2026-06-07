@@ -29,6 +29,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * Idempotent startup bootstrap for the IoTDB Table Mode schema.
@@ -49,6 +50,15 @@ public class IoTDBTableSchemaBootstrap implements InitializingBean {
   static final String SCHEMA_RESOURCE = "schema-iotdb-table.sql";
   private static final String DEFAULT_SCHEMA_DATABASE = "thingsboard";
 
+  /**
+   * IoTDB identifier rule (letter or underscore first, then letters, digits or underscores). The
+   * database name is spliced verbatim into {@code CREATE DATABASE} / {@code USE} DDL, so it is
+   * validated here as defense-in-depth in addition to the {@code @Pattern} bean-validation
+   * constraint on {@link IoTDBTableConfig#getDatabase()} (the bootstrap can be constructed
+   * directly, bypassing bean validation).
+   */
+  private static final Pattern DATABASE_NAME_PATTERN = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*$");
+
   private final ITableSessionPool tableSessionPool;
   private final IoTDBTableConfig config;
 
@@ -59,7 +69,7 @@ public class IoTDBTableSchemaBootstrap implements InitializingBean {
 
   @Override
   public void afterPropertiesSet() throws Exception {
-    String database = config.getDatabase();
+    String database = requireValidDatabaseName(config.getDatabase());
     String schema = loadSchema(database);
     int created = 0;
     int skipped = 0;
@@ -88,6 +98,17 @@ public class IoTDBTableSchemaBootstrap implements InitializingBean {
         database,
         created,
         skipped);
+  }
+
+  private static String requireValidDatabaseName(String database) {
+    if (database == null || !DATABASE_NAME_PATTERN.matcher(database).matches()) {
+      throw new IllegalStateException(
+          "Invalid IoTDB database name for schema bootstrap: '"
+              + database
+              + "'. It must be a valid IoTDB identifier (a letter or underscore followed by letters,"
+              + " digits or underscores) because it is spliced into CREATE DATABASE / USE DDL.");
+    }
+    return database;
   }
 
   private String loadSchema(String database) throws IOException {
