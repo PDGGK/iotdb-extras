@@ -30,8 +30,17 @@ is not a GitHub Actions workflow.
   `mvn compile -DskipTests`
 - Run unit tests:
   `mvn test`
-- Validate the local stack file:
-  `docker compose -f docker-compose.test.yml config`
+- Validate the local stack files:
+  `docker compose -f docker-compose.test.yml config` and
+  `docker compose -f docker-compose.bench.yml config`
+- The TC-1 ingestion-throughput smoke benchmark (design doc section 7) is
+  tagged `benchmark` and is OPT-IN: the default `verify`/CI run excludes it
+  (`failsafe.excluded.groups=benchmark`) so CI never pays its multi-minute,
+  Docker-backed cost. Run it explicitly only when Docker is available, by
+  clearing the exclusion and selecting the tag (not a global `-Dtest=`, which
+  would leak the Docker IT into the unit phase):
+  `mvn verify -Dfailsafe.excluded.groups= -Dgroups=benchmark`
+  or use the out-of-band `docker-compose.bench.yml` stack.
 - Run an integration profile only when Docker is available and required
   environment values are set:
   `TB_POSTGRES_USER=<postgres-user> TB_POSTGRES_PASSWORD=<postgres-password> IOTDB_USERNAME=<iotdb-user> IOTDB_PASSWORD=<iotdb-password>`

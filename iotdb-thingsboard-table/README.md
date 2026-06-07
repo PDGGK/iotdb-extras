@@ -54,6 +54,10 @@ Run the Java test scaffold from the module directory:
 mvn test
 ```
 
+`mvn test` compiles the Docker-backed `*IT.java` integration tests (including
+the TC-1 ingestion-throughput benchmark, `IoTDBTableIngestionBenchmarkIT`) but
+leaves them to the `integration-test` phase; the unit run never executes them.
+
 Start the local integration stack with explicit environment values:
 
 ```bash
@@ -67,6 +71,14 @@ Stop and remove the local stack:
 ```bash
 docker compose -f docker-compose.test.yml down -v
 ```
+
+## Benchmarks
+
+The TC-1 ingestion-throughput benchmark (design doc section 7, smoke profile)
+runs the real `save()` path against a throwaway IoTDB Testcontainer and reports
+records/sec, error rate, and writer stats. See
+[`docs/benchmarks/README.md`](docs/benchmarks/README.md) for how to run it and
+for the smoke floor versus the full-profile `> 10K writes/sec` headline target.
 
 ## Status
 

@@ -47,6 +47,13 @@
         <maven.jar.plugin.version>3.3.0</maven.jar.plugin.version>
         <maven.surefire.plugin.version>3.2.5</maven.surefire.plugin.version>
         <maven.failsafe.plugin.version>3.2.5</maven.failsafe.plugin.version>
+        <!--
+            Integration-test JUnit tags excluded from the default `verify` run. The performance
+            benchmark IT is tagged "benchmark" and is multi-minute and resource-hungry, so it is
+            opt-in (CI does not run it). To run it: -Dfailsafe.excluded.groups= -Dgroups=benchmark
+            (see CI-NOTES.md), or use the out-of-band docker-compose.bench.yml stack.
+        -->
+        <failsafe.excluded.groups>benchmark</failsafe.excluded.groups>
     </properties>
     <dependencies>
         <dependency>
@@ -245,6 +252,8 @@
                     <includes>
                         <include>**/*IT.java</include>
                     </includes>
+                    <!-- Skip the opt-in benchmark IT in the default verify/CI run. -->
+                    <excludedGroups>${failsafe.excluded.groups}</excludedGroups>
                 </configuration>
                 <executions>
                     <execution>
