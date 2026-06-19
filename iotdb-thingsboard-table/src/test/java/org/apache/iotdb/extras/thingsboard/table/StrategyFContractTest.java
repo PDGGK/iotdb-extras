@@ -20,6 +20,7 @@ package org.apache.iotdb.extras.thingsboard.table;
 
 import com.google.common.util.concurrent.ListenableFuture;
 import org.junit.jupiter.api.Test;
+import org.thingsboard.server.common.data.id.DeviceProfileId;
 import org.thingsboard.server.common.data.id.EntityId;
 import org.thingsboard.server.common.data.id.TenantId;
 import org.thingsboard.server.common.data.kv.DeleteTsKvQuery;
@@ -27,6 +28,7 @@ import org.thingsboard.server.common.data.kv.ReadTsKvQuery;
 import org.thingsboard.server.common.data.kv.ReadTsKvQueryResult;
 import org.thingsboard.server.common.data.kv.TsKvEntry;
 import org.thingsboard.server.dao.timeseries.TimeseriesDao;
+import org.thingsboard.server.dao.timeseries.TimeseriesLatestDao;
 
 import java.io.IOException;
 import java.lang.reflect.Method;
@@ -116,25 +118,90 @@ class StrategyFContractTest {
     // so an accidental edit to the local compile-only surface (src/provided) breaks the build.
     // Verified against ThingsBoard v4.3.1.2 (commit c37fb509).
     assertSpiMethod(
+        TimeseriesDao.class,
         "findAllAsync",
         ListenableFuture.class,
         new Class<?>[] {TenantId.class, EntityId.class, List.class});
     assertSpiMethod(
+        TimeseriesDao.class,
         "save",
         ListenableFuture.class,
         new Class<?>[] {TenantId.class, EntityId.class, TsKvEntry.class, long.class});
     assertSpiMethod(
+        TimeseriesDao.class,
         "savePartition",
         ListenableFuture.class,
         new Class<?>[] {TenantId.class, EntityId.class, long.class, String.class});
     assertSpiMethod(
+        TimeseriesDao.class,
         "remove",
         ListenableFuture.class,
         new Class<?>[] {TenantId.class, EntityId.class, DeleteTsKvQuery.class});
-    assertSpiMethod("cleanup", void.class, new Class<?>[] {long.class});
+    assertSpiMethod(TimeseriesDao.class, "cleanup", void.class, new Class<?>[] {long.class});
 
     // The DAO is a genuine TimeseriesDao implementation.
     assertTrue(TimeseriesDao.class.isAssignableFrom(IoTDBTableTimeseriesDao.class));
+  }
+
+  @Test
+  void timeseriesLatestDaoSpiMethodsMatchExpectedSignatures() throws NoSuchMethodException {
+    // IoTDBTableLatestDao implements TimeseriesLatestDao; pin the exact SPI shapes it depends on so
+    // a silent drift in the compile-only surface fails the build. Verified against ThingsBoard
+    // v4.3.1.2 (commit c37fb509); findLatestByEntityIds/findLatestByEntityIdsAsync are new in
+    // v4.3.1.2 relative to v4.3.1.1.
+    assertSpiMethod(
+        TimeseriesLatestDao.class,
+        "findLatestOpt",
+        ListenableFuture.class,
+        new Class<?>[] {TenantId.class, EntityId.class, String.class});
+    assertSpiMethod(
+        TimeseriesLatestDao.class,
+        "findLatest",
+        ListenableFuture.class,
+        new Class<?>[] {TenantId.class, EntityId.class, String.class});
+    assertSpiMethod(
+        TimeseriesLatestDao.class,
+        "findAllLatest",
+        ListenableFuture.class,
+        new Class<?>[] {TenantId.class, EntityId.class});
+    assertSpiMethod(
+        TimeseriesLatestDao.class,
+        "saveLatest",
+        ListenableFuture.class,
+        new Class<?>[] {TenantId.class, EntityId.class, TsKvEntry.class});
+    assertSpiMethod(
+        TimeseriesLatestDao.class,
+        "removeLatest",
+        ListenableFuture.class,
+        new Class<?>[] {TenantId.class, EntityId.class, DeleteTsKvQuery.class});
+    assertSpiMethod(
+        TimeseriesLatestDao.class,
+        "findAllKeysByDeviceProfileId",
+        List.class,
+        new Class<?>[] {TenantId.class, DeviceProfileId.class});
+    assertSpiMethod(
+        TimeseriesLatestDao.class,
+        "findAllKeysByEntityIds",
+        List.class,
+        new Class<?>[] {TenantId.class, List.class});
+    assertSpiMethod(
+        TimeseriesLatestDao.class,
+        "findAllKeysByEntityIdsAsync",
+        ListenableFuture.class,
+        new Class<?>[] {TenantId.class, List.class});
+    assertSpiMethod(
+        TimeseriesLatestDao.class,
+        "findLatestByEntityIds",
+        List.class,
+        new Class<?>[] {TenantId.class, List.class});
+    assertSpiMethod(
+        TimeseriesLatestDao.class,
+        "findLatestByEntityIdsAsync",
+        ListenableFuture.class,
+        new Class<?>[] {TenantId.class, List.class});
+
+    // The DAO is a genuine TimeseriesLatestDao implementation.
+    assertTrue(TimeseriesLatestDao.class.isAssignableFrom(IoTDBTableLatestDao.class));
   }
 
   /**
@@ -145,17 +212,20 @@ class StrategyFContractTest {
    * actionable) when the surface drifts.
    */
   private static void assertSpiMethod(
-      String name, Class<?> expectedReturn, Class<?>[] expectedParams)
+      Class<?> spi, String name, Class<?> expectedReturn, Class<?>[] expectedParams)
       throws NoSuchMethodException {
-    Method method = TimeseriesDao.class.getMethod(name, expectedParams);
+    Method method = spi.getMethod(name, expectedParams);
     assertEquals(
         expectedReturn,
         method.getReturnType(),
-        "TimeseriesDao." + name + " return type drifted from the pinned SPI expectation");
+        spi.getSimpleName() + "." + name + " return type drifted from the pinned SPI expectation");
     assertArrayEquals(
         expectedParams,
         method.getParameterTypes(),
-        "TimeseriesDao." + name + " parameter types drifted from the pinned SPI expectation");
+        spi.getSimpleName()
+            + "."
+            + name
+            + " parameter types drifted from the pinned SPI expectation");
   }
 
   @Test

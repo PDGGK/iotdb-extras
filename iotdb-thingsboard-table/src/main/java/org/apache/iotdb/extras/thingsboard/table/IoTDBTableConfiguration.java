@@ -65,8 +65,11 @@ import java.util.List;
 public class IoTDBTableConfiguration {
   static final String IOTDB_TABLE_SESSION_POOL_BEAN_NAME = "iotdbThingsboardTableSessionPool";
   static final String IOTDB_TABLE_TIMESERIES_DAO_BEAN_NAME = "ioTDBTableTimeseriesDao";
+  static final String IOTDB_TABLE_LATEST_DAO_BEAN_NAME = "ioTDBTableLatestDao";
   static final String TIMESERIES_DAO_CLASS_NAME =
       "org.thingsboard.server.dao.timeseries.TimeseriesDao";
+  static final String TIMESERIES_LATEST_DAO_CLASS_NAME =
+      "org.thingsboard.server.dao.timeseries.TimeseriesLatestDao";
 
   @Configuration(proxyBeanMethods = false)
   @ConditionalOnClass(name = TIMESERIES_DAO_CLASS_NAME)
@@ -74,11 +77,12 @@ public class IoTDBTableConfiguration {
   @EnableConfigurationProperties(IoTDBTableConfig.class)
   static class EnabledRawOnlyConfiguration {
 
-    // This module implements only the timeseries backend. The latest-telemetry
-    // (database.ts_latest.type) and label (iotdb.labels.enabled) selectors are intentionally NOT
-    // included here: those DAOs do not exist yet, so they must not spin up a session pool or schema
-    // bootstrap for a backend that has not shipped. Those conditions return when the corresponding
-    // DAOs are implemented.
+    // The session pool, writer and schema bootstrap are owned by the timeseries backend
+    // (database.ts.type=iotdb-table + iotdb.ts.experimental-raw-only). The derived-latest DAO
+    // (database.ts_latest.type) is registered below and REUSES this pool; it adds the latest
+    // selector on top of the timeseries selector (see IoTDBTableLatestEnabledCondition), so it can
+    // never activate without the writer that populates the telemetry table it reads. The label
+    // (iotdb.labels.enabled) selector returns when that DAO is implemented.
     @Bean(name = IOTDB_TABLE_SESSION_POOL_BEAN_NAME, destroyMethod = "close")
     @ConditionalOnMissingBean(name = IOTDB_TABLE_SESSION_POOL_BEAN_NAME)
     ITableSessionPool tableSessionPool(IoTDBTableConfig config) {
@@ -135,6 +139,39 @@ public class IoTDBTableConfiguration {
     }
 
     /**
+     * Fails startup (only when the latest selector is on) if the IoTDB latest backend is enabled
+     * but a conflicting non-IoTDB {@code TimeseriesLatestDao} is present, mirroring the fail-fast
+     * behavior of {@link #timeseriesDaoConflictGuard()} for the historical DAO so the latest path
+     * does not silently back off to a different backend while the timeseries path runs on IoTDB.
+     */
+    @Bean
+    @ConditionalOnClass(name = TIMESERIES_LATEST_DAO_CLASS_NAME)
+    @Conditional(IoTDBTableLatestEnabledCondition.class)
+    static BeanFactoryPostProcessor timeseriesLatestDaoConflictGuard() {
+      return new TimeseriesLatestDaoConflictGuard();
+    }
+
+    /**
+     * Registers the derived-latest DAO. It is gated by {@link IoTDBTableLatestEnabledCondition}
+     * (the timeseries selector plus {@code database.ts_latest.type=iotdb-table}) so it only
+     * activates when the IoTDB writer that populates the telemetry table is also active, and reuses
+     * the module-owned named session pool. A conflicting host {@code TimeseriesLatestDao} fails
+     * startup fast via {@link #timeseriesLatestDaoConflictGuard()} rather than silently shadowing
+     * this DAO; the string-based missing-bean guard keeps auto-config metadata evaluation from
+     * loading ThingsBoard classes.
+     */
+    @Bean
+    @ConditionalOnClass(name = TIMESERIES_LATEST_DAO_CLASS_NAME)
+    @ConditionalOnBean(name = IOTDB_TABLE_SESSION_POOL_BEAN_NAME)
+    @Conditional(IoTDBTableLatestEnabledCondition.class)
+    @ConditionalOnMissingBean(type = TIMESERIES_LATEST_DAO_CLASS_NAME)
+    IoTDBTableLatestDao ioTDBTableLatestDao(
+        @Qualifier(IOTDB_TABLE_SESSION_POOL_BEAN_NAME) ITableSessionPool tableSessionPool,
+        IoTDBTableConfig config) {
+      return new IoTDBTableLatestDao(tableSessionPool, config);
+    }
+
+    /**
      * Idempotent startup schema bootstrap. Only registered when the IoTDB Table Mode backend is
      * selected and explicitly enabled (same activation guard as the pool/DAO), the session pool
      * bean is present, and {@code iotdb.schema.bootstrap} is not disabled (defaults to {@code
@@ -157,9 +194,18 @@ public class IoTDBTableConfiguration {
     @Override
     public void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory)
         throws BeansException {
-      Class<?> timeseriesDaoType = resolveTimeseriesDaoClass(beanFactory);
+      Class<?> timeseriesDaoType = resolveSpiClass(beanFactory, TIMESERIES_DAO_CLASS_NAME);
       for (String beanName : beanFactory.getBeanNamesForType(timeseriesDaoType, true, false)) {
-        if (!isIoTDBTimeseriesDaoBean(beanFactory, beanName)) {
+        Class<?> beanType = resolveBeanType(beanFactory, beanName);
+        if (beanType == null) {
+          throw new IllegalStateException(
+              "database.ts.type=iotdb-table with iotdb.ts.experimental-raw-only=true, but "
+                  + "TimeseriesDao bean '"
+                  + beanName
+                  + "' has no resolvable type; expose a concrete IoTDBTableTimeseriesDao type or "
+                  + "remove the bean");
+        }
+        if (!IoTDBTableTimeseriesDao.class.isAssignableFrom(beanType)) {
           throw new IllegalStateException(
               "database.ts.type=iotdb-table with iotdb.ts.experimental-raw-only=true, but a "
                   + "non-IoTDB TimeseriesDao bean '"
@@ -168,39 +214,52 @@ public class IoTDBTableConfiguration {
         }
       }
     }
+  }
 
-    private static boolean isIoTDBTimeseriesDaoBean(
-        ConfigurableListableBeanFactory beanFactory, String beanName) {
-      Class<?> beanType = resolveBeanType(beanFactory, beanName);
-      if (beanType == null) {
-        throw new IllegalStateException(
-            "database.ts.type=iotdb-table with iotdb.ts.experimental-raw-only=true, but "
-                + "TimeseriesDao bean '"
-                + beanName
-                + "' has no resolvable type; expose a concrete IoTDBTableTimeseriesDao type or "
-                + "remove the bean");
+  private static final class TimeseriesLatestDaoConflictGuard implements BeanFactoryPostProcessor {
+    @Override
+    public void postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory)
+        throws BeansException {
+      Class<?> latestDaoType = resolveSpiClass(beanFactory, TIMESERIES_LATEST_DAO_CLASS_NAME);
+      for (String beanName : beanFactory.getBeanNamesForType(latestDaoType, true, false)) {
+        Class<?> beanType = resolveBeanType(beanFactory, beanName);
+        if (beanType == null) {
+          throw new IllegalStateException(
+              "database.ts_latest.type=iotdb-table with the IoTDB timeseries backend enabled, but "
+                  + "TimeseriesLatestDao bean '"
+                  + beanName
+                  + "' has no resolvable type; expose a concrete IoTDBTableLatestDao type or "
+                  + "remove the bean");
+        }
+        if (!IoTDBTableLatestDao.class.isAssignableFrom(beanType)) {
+          throw new IllegalStateException(
+              "database.ts_latest.type=iotdb-table with the IoTDB timeseries backend enabled, but a "
+                  + "non-IoTDB TimeseriesLatestDao bean '"
+                  + beanName
+                  + "' is present; remove it or unset the IoTDB latest selector");
+        }
       }
-      return beanType != null && IoTDBTableTimeseriesDao.class.isAssignableFrom(beanType);
     }
+  }
 
-    private static Class<?> resolveBeanType(
-        ConfigurableListableBeanFactory beanFactory, String beanName) {
-      Class<?> beanType = beanFactory.getType(beanName, false);
-      if (beanType != null || !beanFactory.containsBeanDefinition(beanName)) {
-        return beanType;
-      }
-      BeanDefinition beanDefinition = beanFactory.getBeanDefinition(beanName);
-      ResolvableType resolvableType = beanDefinition.getResolvableType();
-      return resolvableType == ResolvableType.NONE ? null : resolvableType.resolve();
+  private static Class<?> resolveBeanType(
+      ConfigurableListableBeanFactory beanFactory, String beanName) {
+    Class<?> beanType = beanFactory.getType(beanName, false);
+    if (beanType != null || !beanFactory.containsBeanDefinition(beanName)) {
+      return beanType;
     }
+    BeanDefinition beanDefinition = beanFactory.getBeanDefinition(beanName);
+    ResolvableType resolvableType = beanDefinition.getResolvableType();
+    return resolvableType == ResolvableType.NONE ? null : resolvableType.resolve();
+  }
 
-    private static Class<?> resolveTimeseriesDaoClass(ConfigurableListableBeanFactory beanFactory) {
-      try {
-        return ClassUtils.forName(TIMESERIES_DAO_CLASS_NAME, beanFactory.getBeanClassLoader());
-      } catch (ClassNotFoundException e) {
-        throw new IllegalStateException(
-            "IoTDB Table Mode backend was enabled but TimeseriesDao is not on the classpath", e);
-      }
+  private static Class<?> resolveSpiClass(
+      ConfigurableListableBeanFactory beanFactory, String className) {
+    try {
+      return ClassUtils.forName(className, beanFactory.getBeanClassLoader());
+    } catch (ClassNotFoundException e) {
+      throw new IllegalStateException(
+          "IoTDB Table Mode backend was enabled but " + className + " is not on the classpath", e);
     }
   }
 }
